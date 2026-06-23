@@ -1,0 +1,42 @@
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+aiofiles==23.2.1
+
+# Database - SQLite (built into Python, no extra driver needed)
+sqlalchemy==2.0.35
+alembic==1.13.3
+
+# Config
+python-dotenv==1.0.1
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# HTTP
+requests==2.32.3
+httpx==0.27.2
+urllib3==2.2.3
+
+# AI - Speech
+faster-whisper==1.0.3
+pyannote.audio==3.3.2
+torch==2.4.1
+torchaudio==2.4.1
+
+# AI - Vision
+opencv-python-headless==4.10.0.84
+Pillow==10.4.0
+paddlepaddle==2.6.2
+paddleocr==2.8.1
+
+# AI - Embeddings
+sentence-transformers==3.1.1
+transformers==4.44.2
+
+# Vector DB
+qdrant-client==1.11.3
+
+# Utilities
+numpy==1.26.4
+tqdm==4.66.5
