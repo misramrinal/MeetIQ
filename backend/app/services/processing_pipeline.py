@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date
 from pathlib import Path
 
@@ -33,8 +35,28 @@ from app.services import (
     audio_processor, diarizer, embedder, frame_extractor,
     knowledge_extractor, ocr_service, qdrant_service,
 )
+from app.services.knowledge_extractor import coerce_text
 
 logger = logging.getLogger(__name__)
+
+
+class ProcessingTimeout(RuntimeError):
+    """Raised when processing exceeds PROCESSING_TIMEOUT_SECONDS."""
+
+
+def _check_deadline(deadline: float, stage: str) -> None:
+    """Abort the pipeline if the wall-clock deadline has passed.
+
+    This is a cooperative check between stages: it cannot interrupt a single
+    long-running native call (e.g. Whisper/pyannote), but it prevents the
+    pipeline from proceeding into further work once the budget is exhausted.
+    """
+    if deadline and time.monotonic() > deadline:
+        raise ProcessingTimeout(
+            f"Processing exceeded the {settings.processing_timeout_seconds}s time "
+            f"limit (aborted before '{stage}'). Try a shorter recording, a smaller "
+            f"Whisper model, or disabling diarization/OCR."
+        )
 
 
 # ── Public Entry Point ───────────────────────────────────────────────────
@@ -55,7 +77,12 @@ def process_meeting(meeting_id: str) -> None:
         db.commit()
         logger.info("[%s] Processing started: %s", meeting_id, meeting.title)
 
-        _run_pipeline(meeting, db)
+        deadline = (
+            time.monotonic() + settings.processing_timeout_seconds
+            if settings.processing_timeout_seconds and settings.processing_timeout_seconds > 0
+            else 0.0
+        )
+        _run_pipeline(meeting, db, deadline)
 
         meeting.status = "done"
         meeting.processed_at = datetime.utcnow()
@@ -78,7 +105,7 @@ def process_meeting(meeting_id: str) -> None:
 
 # ── Pipeline Implementation ──────────────────────────────────────────────
 
-def _run_pipeline(meeting: Meeting, db: Session) -> None:
+def _run_pipeline(meeting: Meeting, db: Session, deadline: float = 0.0) -> None:
     meeting_id_str = str(meeting.id)
     video_path = meeting.recording_path
 
@@ -92,25 +119,32 @@ def _run_pipeline(meeting: Meeting, db: Session) -> None:
         meeting.duration_seconds = int(duration)
     db.commit()
 
-    # ── Step 2: Transcribe ───────────────────────────────────────────────
-    raw_segments, audio_duration = audio_processor.transcribe(audio_path)
+    _check_deadline(deadline, "transcription")
+
+    # ── Step 2 + 3: Transcribe and diarize concurrently ──────────────────
+    # Both only need the audio file and are independent, so overlap them.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        diarize_future = pool.submit(diarizer.diarize, audio_path)
+        raw_segments, audio_duration = audio_processor.transcribe(audio_path)
+        speakers = diarize_future.result()
+
     if audio_duration and not meeting.duration_seconds:
         meeting.duration_seconds = int(audio_duration)
         db.commit()
 
     if not raw_segments:
-        logger.warning("[%s] No transcript segments produced.", meeting_id_str)
-        return
+        raise RuntimeError("No transcript segments produced from the uploaded recording.")
 
-    # ── Step 3 + 4: Diarize and align ────────────────────────────────────
-    speakers = diarizer.diarize(audio_path)
+    _check_deadline(deadline, "knowledge extraction & indexing")
+
+    # ── Step 4: Align transcript with speakers ───────────────────────────
     aligned = diarizer.align_speakers(raw_segments, speakers)
 
     # ── Step 5: Persist transcript segments ──────────────────────────────
     segment_rows: list[TranscriptSegment] = []
     for seg in aligned:
         row = TranscriptSegment(
-            id=uuid.uuid4(),
+            id=str(uuid.uuid4()),
             meeting_id=meeting.id,
             speaker=seg.get("speaker", "Speaker"),
             text=seg["text"],
@@ -128,67 +162,90 @@ def _run_pipeline(meeting: Meeting, db: Session) -> None:
     meeting.participants = participants
     db.commit()
 
-    # ── Step 6: Embed and index transcripts ──────────────────────────────
-    _index_transcripts_in_qdrant(meeting, segment_rows)
-
-    # ── Steps 7-9: Frames + OCR + CLIP ───────────────────────────────────
-    if settings.enable_frame_extraction:
-        _process_video_frames(meeting, db)
-
-    # ── Step 10: Extract knowledge via LLM ───────────────────────────────
-    extracted = knowledge_extractor.extract_knowledge([
+    # Snapshot transcript data as plain dicts so background threads never touch
+    # the SQLAlchemy session (which is owned exclusively by this main thread).
+    meeting_title = meeting.title
+    seg_snapshot = [
         {
+            "id": str(row.id),
             "speaker": row.speaker,
             "start_time": row.start_time,
             "end_time": row.end_time,
             "text": row.text,
         }
         for row in segment_rows
-    ])
+    ]
+
+    # ── Steps 6 + 10 run concurrently with frame processing ──────────────
+    #   Step 6:  embed transcripts + index in Qdrant   (background thread)
+    #   Step 10: extract knowledge via the LLM         (background thread)
+    #   Steps 7-9: frame extraction / OCR / CLIP        (this thread; owns DB)
+    # The LLM call is the long pole, so overlapping it with embedding and
+    # frame work cuts wall-clock time noticeably.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        index_future = pool.submit(
+            _index_transcripts_in_qdrant, meeting_id_str, meeting_title, seg_snapshot
+        )
+        knowledge_future = pool.submit(knowledge_extractor.extract_knowledge, seg_snapshot)
+
+        # ── Steps 7-9: Frames + OCR + CLIP (main thread, uses DB) ────────
+        if settings.enable_frame_extraction:
+            _process_video_frames(meeting, db)
+
+        # Surface indexing errors (logged inside), then collect knowledge.
+        index_future.result()
+        extracted = knowledge_future.result()
 
     # ── Step 11: Save decisions, action items, summary ───────────────────
     _persist_knowledge(meeting, extracted, db)
 
 
 def _index_transcripts_in_qdrant(
-    meeting: Meeting,
-    segment_rows: list[TranscriptSegment],
+    meeting_id: str,
+    meeting_title: str,
+    segments: list[dict],
 ) -> None:
-    """Generate text embeddings and upsert to Qdrant."""
-    if not segment_rows:
+    """Generate text embeddings and upsert to Qdrant.
+
+    Operates on plain dicts (not ORM rows) so it is safe to run in a background
+    thread without sharing the SQLAlchemy session.
+    """
+    if not segments:
         return
-    texts = [row.text for row in segment_rows]
+    texts = [seg["text"] for seg in segments]
     try:
         vectors = embedder.embed_texts(texts)
     except Exception as e:
-        logger.error("[%s] Text embedding failed: %s", meeting.id, e)
+        logger.error("[%s] Text embedding failed: %s", meeting_id, e)
         return
 
     # Skip Qdrant upsert when embeddings are disabled (empty vectors)
     if not any(vectors):
-        logger.info("[%s] Embeddings disabled — skipping Qdrant transcript indexing.", meeting.id)
+        logger.info("[%s] Embeddings disabled — skipping Qdrant transcript indexing.", meeting_id)
         return
 
     points = []
-    for row, vec in zip(segment_rows, vectors):
+    for seg, vec in zip(segments, vectors):
+        if not vec:
+            continue
         points.append({
-            "id": str(row.id),
+            "id": seg["id"],
             "vector": vec,
             "payload": {
-                "meeting_id": str(meeting.id),
-                "meeting_title": meeting.title,
-                "segment_id": str(row.id),
-                "speaker": row.speaker,
-                "start_time": row.start_time,
-                "end_time": row.end_time,
-                "text": row.text,
+                "meeting_id": meeting_id,
+                "meeting_title": meeting_title,
+                "segment_id": seg["id"],
+                "speaker": seg["speaker"],
+                "start_time": seg["start_time"],
+                "end_time": seg["end_time"],
+                "text": seg["text"],
             },
         })
 
     try:
         qdrant_service.upsert_transcript_segments(points)
     except Exception as e:
-        logger.error("[%s] Qdrant upsert (transcripts) failed: %s", meeting.id, e)
+        logger.error("[%s] Qdrant upsert (transcripts) failed: %s", meeting_id, e)
 
 
 def _process_video_frames(meeting: Meeting, db: Session) -> None:
@@ -209,26 +266,31 @@ def _process_video_frames(meeting: Meeting, db: Session) -> None:
     frame_rows: list[VideoFrame] = []
     qdrant_points: list[dict] = []
 
-    for frame in frames:
+    frame_paths = [f["path"] for f in frames]
+
+    # OCR every frame in ONE isolated subprocess call (paddle inits once).
+    try:
+        ocr_map = ocr_service.extract_text_batch(frame_paths)
+    except Exception as e:
+        logger.warning("Batch OCR failed: %s", e)
+        ocr_map = {}
+
+    # CLIP-embed all frames in batches (one forward pass per batch instead of
+    # one per frame). Order matches ``frames``.
+    try:
+        image_vecs = embedder.embed_images(frame_paths)
+    except Exception as e:
+        logger.warning("Batch CLIP embedding failed: %s", e)
+        image_vecs = [[] for _ in frame_paths]
+
+    for frame, image_vec in zip(frames, image_vecs):
         ts = frame["timestamp"]
         path = frame["path"]
 
-        # OCR (may return "")
-        try:
-            ocr_text = ocr_service.extract_text(path)
-        except Exception as e:
-            logger.warning("OCR failed on %s: %s", path, e)
-            ocr_text = ""
-
-        # CLIP embedding
-        try:
-            image_vec = embedder.embed_image(path)
-        except Exception as e:
-            logger.warning("CLIP embedding failed on %s: %s", path, e)
-            image_vec = None
+        ocr_text = ocr_map.get(path, "")
 
         row = VideoFrame(
-            id=uuid.uuid4(),
+            id=str(uuid.uuid4()),
             meeting_id=meeting.id,
             timestamp=ts,
             frame_path=path,
@@ -238,7 +300,7 @@ def _process_video_frames(meeting: Meeting, db: Session) -> None:
         db.add(row)
         frame_rows.append(row)
 
-        if image_vec is not None:
+        if image_vec:
             qdrant_points.append({
                 "id": str(row.id),
                 "vector": image_vec,
@@ -268,15 +330,17 @@ def _persist_knowledge(meeting: Meeting, extracted: dict, db: Session) -> None:
     topics = extracted.get("topics") or []
     unresolved = extracted.get("unresolved") or []
     entities = extracted.get("entities") or []
-    summary = (extracted.get("summary") or "").strip() or None
+    summary = coerce_text(extracted.get("summary"), keys=("summary", "text")) or None
 
     for d in decisions:
+        if not isinstance(d, dict):
+            continue
         try:
             db.add(Decision(
-                id=uuid.uuid4(),
+                id=str(uuid.uuid4()),
                 meeting_id=meeting.id,
-                text=(d.get("text") or "").strip()[:5000],
-                made_by=(d.get("made_by") or None),
+                text=coerce_text(d.get("text"), keys=("text", "decision", "value"))[:5000],
+                made_by=coerce_text(d.get("made_by"), keys=("made_by", "name", "speaker")) or None,
                 timestamp=_safe_float(d.get("timestamp")),
                 confidence=float(d.get("confidence") or 0.0),
                 context=d.get("context"),
@@ -285,13 +349,15 @@ def _persist_knowledge(meeting: Meeting, extracted: dict, db: Session) -> None:
             logger.warning("Skipping bad decision row: %s", e)
 
     for a in actions:
+        if not isinstance(a, dict):
+            continue
         try:
             due = _parse_date(a.get("due_date"))
             db.add(ActionItem(
-                id=uuid.uuid4(),
+                id=str(uuid.uuid4()),
                 meeting_id=meeting.id,
-                text=(a.get("text") or "").strip()[:5000],
-                owner=(a.get("owner") or None),
+                text=coerce_text(a.get("text"), keys=("text", "action", "task", "value"))[:5000],
+                owner=coerce_text(a.get("owner"), keys=("owner", "name", "assignee")) or None,
                 due_date=due,
                 timestamp=_safe_float(a.get("timestamp")),
                 status="open",

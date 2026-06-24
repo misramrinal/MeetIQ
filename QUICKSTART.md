@@ -18,7 +18,7 @@ You upload a meeting recording (audio or video). The backend:
 6. Generates **CLIP** image embeddings for visual search
 7. Generates **sentence-transformers** text embeddings
 8. Indexes everything in **Qdrant**
-9. Calls **QGenie LLM** to extract decisions, action items, topics, summary
+9. Calls the configured **LLM provider** to extract decisions, action items, topics, summary
 10. Saves all structured data to **PostgreSQL**
 
 You can then:
@@ -47,7 +47,7 @@ cd MeetMind
 
 # 2. Copy environment file
 cp .env.example .env
-# (the QGenie API key is already in .env.example)
+# Default uses local Ollama. For OpenAI, edit .env and set OPENAI_API_KEY.
 
 # 3. Build and start everything
 docker compose up -d --build
@@ -96,8 +96,8 @@ Should return:
 {
   "status": "ok",
   "version": "1.0.0",
-  "llm_model": "vertexai::gemini-3.1-pro-preview",
-  "qgenie_endpoint": "https://qgenie-api.qualcomm.com/v1",
+  "llm_provider": "ollama",
+  "llm_model": "llama3.2",
   "whisper_model": "base",
   "diarization_enabled": false
 }
@@ -142,7 +142,7 @@ Typical timings for a 5-minute audio recording:
 | Audio extraction | 5–10 s |
 | Whisper transcription | 60–120 s |
 | Frame extraction + OCR + CLIP | 30–60 s |
-| LLM extraction (QGenie) | 10–30 s |
+| LLM extraction | 10–30 s |
 | **Total** | **2–4 minutes** |
 
 ### 4. Get the Transcript
@@ -202,9 +202,11 @@ All settings live in `.env`. The most important ones for V1:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `QGENIE_ENDPOINT` | `https://qgenie-api.qualcomm.com/v1` | QGenie API base URL |
-| `QGENIE_API_KEY` | (set in `.env.example`) | Your QGenie API key |
-| `LLM_MODEL_NAME` | `vertexai::gemini-3.1-pro-preview` | Model routed by QGenie |
+| `LLM_PROVIDER` | `ollama` | `ollama` for local models, `openai` for hosted/OpenAI-compatible APIs |
+| `LLM_MODEL_NAME` | `llama3.2` | Model name sent to the provider |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama URL for native runs; Docker Compose overrides this to `host.docker.internal` |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
+| `OPENAI_API_KEY` | (empty) | Required only when `LLM_PROVIDER=openai` |
 | `WHISPER_MODEL` | `base` | Use `small` for better accuracy |
 | `PYANNOTE_AUTH_TOKEN` | (empty) | Optional; enables speaker diarization |
 | `FRAME_INTERVAL_SECONDS` | `5` | How often to extract frames |
@@ -220,19 +222,19 @@ By default, all transcript segments are labelled `"Speaker"`. To enable real spe
 3. Set `PYANNOTE_AUTH_TOKEN=hf_xxxx` in `.env`
 4. Restart: `docker compose restart backend`
 
-### Switching the Model
-
-QGenie routes to many underlying models. Change `LLM_MODEL_NAME` in `.env`:
+### Switching the LLM Provider or Model
 
 ```env
-# Vertex AI Gemini (default)
-LLM_MODEL_NAME=vertexai::gemini-3.1-pro-preview
+# Local Ollama (default)
+LLM_PROVIDER=ollama
+LLM_MODEL_NAME=llama3.2
+OLLAMA_BASE_URL=http://localhost:11434
 
-# Anthropic Claude
-LLM_MODEL_NAME=anthropic::claude-3-5-sonnet-20241022
-
-# OpenAI via QGenie
-LLM_MODEL_NAME=openai::gpt-4o
+# OpenAI or compatible hosted API
+LLM_PROVIDER=openai
+LLM_MODEL_NAME=gpt-4o-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_API_KEY=sk-...
 ```
 
 Restart the backend after changing: `docker compose restart backend`
@@ -256,7 +258,7 @@ MeetMind/
 │   │   │   ├── actions.py                # Action items CRUD
 │   │   │   └── decisions.py              # Decisions listing
 │   │   └── services/
-│   │       ├── llm_client.py             # QGenie / OpenAI / Ollama
+│   │       ├── llm_client.py             # Ollama / OpenAI-compatible LLM client
 │   │       ├── audio_processor.py        # FFmpeg + faster-whisper
 │   │       ├── diarizer.py               # pyannote.audio
 │   │       ├── frame_extractor.py        # OpenCV
@@ -298,10 +300,10 @@ but if it gives up:
 docker compose restart backend
 ```
 
-### QGenie returns 401 / 403
+### LLM provider returns 401 / 403
 
-Check that `QGENIE_API_KEY` and `QGENIE_ENDPOINT` are correct.
-If the QGenie server uses a self-signed certificate, leave `QGENIE_SSL_VERIFY=false`.
+For `LLM_PROVIDER=openai`, check that `OPENAI_API_KEY` and `OPENAI_BASE_URL` are correct.
+For `LLM_PROVIDER=ollama`, make sure Ollama is running on the host and that the model has been pulled.
 
 ### Frame extraction returns 0 frames
 

@@ -185,6 +185,9 @@ def visual_search(query: str, top_k: int = 5) -> list[dict]:
     except Exception as e:
         logger.error("CLIP text embedding failed: %s", e)
         return []
+    if not vec:
+        logger.info("Visual search skipped because CLIP embeddings are unavailable.")
+        return []
 
     results = search_frames(vec, limit=top_k)
     sources = []

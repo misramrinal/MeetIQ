@@ -12,6 +12,7 @@ import {
   Upload,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { BACKEND_URL } from "@/lib/api";
 
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -65,7 +66,7 @@ export default function Sidebar() {
       <div className="px-5 py-4 border-t border-slate-700">
         <p className="text-slate-500 text-xs">MeetMind v1.0</p>
         <a
-          href="http://localhost:8000/docs"
+          href={`${BACKEND_URL}/docs`}
           target="_blank"
           rel="noopener noreferrer"
           className="text-slate-500 hover:text-slate-300 text-xs transition-colors"

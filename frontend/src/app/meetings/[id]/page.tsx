@@ -22,6 +22,14 @@ import type { ActionItem } from "@/lib/types";
 // Dynamically import ReactPlayer to avoid SSR issues
 const ReactPlayer = dynamic(() => import("react-player/lazy"), { ssr: false });
 
+// The backend marks timeouts with a message like
+// "Processing exceeded the 7200s time limit ...".
+function isTimeoutError(message?: string | null): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return m.includes("time limit") || m.includes("timed out") || m.includes("timeout");
+}
+
 const TABS = [
   { id: "transcript", label: "Transcript", icon: MessageSquare },
   { id: "decisions", label: "Decisions", icon: Lightbulb },
@@ -39,12 +47,15 @@ export default function MeetingDetailPage() {
   const [activeTab, setActiveTab] = useState("transcript");
   const [currentTime, setCurrentTime] = useState(0);
   const playerRef = useRef<{ seekTo: (t: number) => void } | null>(null);
+  const prevStatusRef = useRef<string | null>(null);
 
-  const { data: meeting, isLoading } = useQuery({
+  const { data: meeting, isLoading, isError } = useQuery({
     queryKey: ["meeting", id],
     queryFn: () => meetingsApi.get(id),
-    refetchInterval: (data) =>
-      data?.status === "processing" || data?.status === "pending" ? 3000 : false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "processing" || status === "pending" ? 3000 : false;
+    },
   });
 
   const { data: transcript = [] } = useQuery({
@@ -77,6 +88,28 @@ export default function MeetingDetailPage() {
     enabled: meeting?.status === "done",
   });
 
+  // Notify the user when processing finishes or fails (incl. timeouts) while
+  // they're watching the page (status is polled every 3s above).
+  useEffect(() => {
+    if (!meeting) return;
+    const prev = prevStatusRef.current;
+    if (prev && prev !== meeting.status) {
+      if (meeting.status === "done") {
+        toast.success("Processing complete!");
+      } else if (meeting.status === "failed") {
+        if (isTimeoutError(meeting.error_message)) {
+          toast.error(
+            "Processing timed out. Try a shorter recording, a smaller Whisper model, or disabling diarization/OCR.",
+            { duration: 10000 }
+          );
+        } else {
+          toast.error(`Processing failed: ${meeting.error_message || "Unknown error"}`);
+        }
+      }
+    }
+    prevStatusRef.current = meeting.status;
+  }, [meeting]);
+
   const handleSeek = useCallback((time: number) => {
     playerRef.current?.seekTo(time);
     setCurrentTime(time);
@@ -98,12 +131,21 @@ export default function MeetingDetailPage() {
     queryClient.setQueryData(["actions", id], (old: ActionItem[] = []) =>
       old.map((a) => (a.id === updated.id ? updated : a))
     );
+    queryClient.invalidateQueries({ queryKey: ["actions"] });
   };
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
         <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-gray-400">
+        <p>Could not load this meeting. Make sure the backend is running.</p>
       </div>
     );
   }
@@ -173,9 +215,20 @@ export default function MeetingDetailPage() {
 
       {meeting.status === "failed" && (
         <div className="px-6 py-4 bg-red-50 border-b border-red-100">
-          <p className="text-sm text-red-700">
-            Processing failed: {meeting.error_message || "Unknown error"}
-          </p>
+          {isTimeoutError(meeting.error_message) ? (
+            <div className="text-sm text-red-700">
+              <p className="font-semibold">Processing timed out</p>
+              <p className="mt-0.5">{meeting.error_message}</p>
+              <p className="mt-1 text-red-600/80">
+                Tip: upload a shorter recording, switch to a smaller Whisper model, or
+                disable diarization/OCR to speed processing up.
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-red-700">
+              Processing failed: {meeting.error_message || "Unknown error"}
+            </p>
+          )}
         </div>
       )}
 

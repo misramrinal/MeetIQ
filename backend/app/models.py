@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import Column, String, Float, Integer, Date, Text, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
@@ -20,7 +20,7 @@ class Meeting(Base):
 
     id = Column(String(36), primary_key=True, default=_new_uuid)
     title = Column(String(500), nullable=False)
-    date = Column(Date, default=datetime.utcnow)
+    date = Column(Date, default=date.today)
     duration_seconds = Column(Integer, nullable=True)
     recording_path = Column(Text, nullable=False)
     audio_path = Column(Text, nullable=True)

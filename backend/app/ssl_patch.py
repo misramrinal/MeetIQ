@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 def apply() -> None:
+    enabled = os.getenv("MEETMIND_DISABLE_SSL_VERIFY", "").lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return
+
     # ── 1. Environment variables ──────────────────────────────────────────
     os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
     os.environ["CURL_CA_BUNDLE"] = ""

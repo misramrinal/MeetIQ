@@ -69,6 +69,34 @@ def on_startup() -> None:
     except Exception as e:
         logger.error("Qdrant init failed: %s", e)
 
+    # Warm up heavy ML models so the FIRST upload doesn't pay the model-loading
+    # penalty inside the request.
+    #
+    # NOTE: We deliberately do NOT warm up (or load) PaddleOCR in this process.
+    # PaddlePaddle and PyTorch conflict over native OpenMP/CRT DLLs on Windows:
+    # loading paddle after torch deadlocks, and loading it before torch breaks
+    # torch/ctranslate2 ("WinError 127 ... shm.dll"). OCR therefore runs in an
+    # isolated subprocess (see app.services.ocr_service).
+    import threading
+    from app.services import audio_processor, diarizer, embedder, gpu
+
+    # Initialise torch's GPU cuDNN BEFORE anything imports CTranslate2 (via the
+    # Whisper warmup below). Otherwise CTranslate2 binds an incompatible cuDNN
+    # first and torch's GPU calls (diarization/CLIP) crash. Done synchronously
+    # so the ordering is guaranteed before the warmup thread starts.
+    gpu.prime_cuda()
+
+    def _warmup() -> None:
+        logger.info("Warming up ML models in background...")
+        audio_processor.warmup()
+        embedder.warmup()
+        diarizer.warmup()
+        if settings.enable_frame_extraction:
+            embedder.warmup_clip()
+        logger.info("Model warmup complete.")
+
+    threading.Thread(target=_warmup, name="model-warmup", daemon=True).start()
+
 
 # ── Health ───────────────────────────────────────────────────────────────
 
@@ -77,8 +105,8 @@ def health() -> dict:
     return {
         "status": "ok",
         "version": __version__,
+        "llm_provider": settings.llm_provider,
         "llm_model": settings.llm_model_name,
-        "qgenie_endpoint": settings.qgenie_endpoint,
         "whisper_model": settings.whisper_model,
         "diarization_enabled": bool(settings.pyannote_auth_token) and settings.enable_diarization,
     }

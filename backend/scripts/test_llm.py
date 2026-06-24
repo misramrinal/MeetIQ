@@ -1,8 +1,8 @@
 """
-QGenie smoke test for MeetMind.
+LLM smoke test for MeetMind.
 
-Verifies that the QGenie endpoint is reachable and returns valid responses.
-Mirrors the call pattern from jira_hop_detector.py.
+Verifies that the configured LLM provider is reachable and returns valid
+plain-text and JSON responses.
 
 Run from inside the backend container:
     docker compose exec backend python scripts/test_llm.py
@@ -27,9 +27,13 @@ from app.services.llm_client import chat, chat_json, LLMError  # noqa: E402
 
 def test_plain_chat() -> None:
     print(f"\n[1/2] Plain chat")
-    print(f"      Endpoint : {settings.qgenie_endpoint}")
+    print(f"      Provider : {settings.llm_provider}")
     print(f"      Model    : {settings.llm_model_name}")
-    print(f"      API key  : {'set (' + settings.qgenie_api_key[:8] + '...)' if settings.qgenie_api_key else 'MISSING'}")
+    if settings.llm_provider.lower() == "ollama":
+        print(f"      Endpoint : {settings.ollama_base_url}")
+    else:
+        print(f"      Endpoint : {settings.openai_base_url}")
+        print(f"      API key  : {'set (' + settings.openai_api_key[:8] + '...)' if settings.openai_api_key else 'MISSING'}")
 
     try:
         reply = chat(
@@ -78,7 +82,7 @@ def test_json_extraction() -> None:
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  MeetMind — QGenie Smoke Test")
+    print("  MeetMind — LLM Smoke Test")
     print("=" * 60)
     test_plain_chat()
     test_json_extraction()

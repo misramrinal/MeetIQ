@@ -165,14 +165,10 @@ export default function SearchPage() {
             <div className="grid grid-cols-2 gap-3">
               {visualResult.frames.map((frame, i) => (
                 <div key={i} className="card overflow-hidden hover:border-blue-200 transition-colors">
-                  {frame.meeting_id && (frame.frame_id || frame.frame_path) && (
+                  {frame.meeting_id && frame.frame_id && (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={
-                        frame.meeting_id && frame.frame_id
-                          ? meetingsApi.getFrameImageUrl(frame.meeting_id, frame.frame_id)
-                          : undefined
-                      }
+                      src={meetingsApi.getFrameImageUrl(frame.meeting_id, frame.frame_id)}
                       alt={`Frame at ${frame.timestamp != null ? formatTime(frame.timestamp) : "?"}`}
                       className="w-full aspect-video object-cover bg-gray-100"
                       onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}

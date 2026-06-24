@@ -1,9 +1,10 @@
-"""SQLAlchemy database setup — SQLite backend."""
+"""SQLAlchemy database setup."""
 from __future__ import annotations
 
+from collections.abc import Generator
+
 from sqlalchemy import create_engine, event
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from app.config import settings
 
@@ -33,7 +34,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-def get_db() -> Session:
+def get_db() -> Generator[Session, None, None]:
     """FastAPI dependency that yields a database session."""
     db = SessionLocal()
     try:

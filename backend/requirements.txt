@@ -4,8 +4,9 @@ uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 aiofiles==23.2.1
 
-# Database - SQLite (built into Python, no extra driver needed)
+# Database
 sqlalchemy==2.0.35
+psycopg2-binary==2.9.9
 alembic==1.13.3
 
 # Config
@@ -33,9 +34,10 @@ paddleocr==2.8.1
 # AI - Embeddings
 sentence-transformers==3.1.1
 transformers==4.44.2
+hf_xet==1.2.0
 
 # Vector DB
-qdrant-client==1.11.3
+qdrant-client==1.18.0
 
 # Utilities
 numpy==1.26.4

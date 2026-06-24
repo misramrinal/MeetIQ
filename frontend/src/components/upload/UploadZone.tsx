@@ -3,13 +3,15 @@
 import { useState, useRef, useCallback } from "react";
 import { Upload, FileVideo, FileAudio, X, CheckCircle2, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { meetingsApi } from "@/lib/api";
+import { getApiErrorMessage, meetingsApi } from "@/lib/api";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 
 const ACCEPTED = ".mp4,.mov,.webm,.mkv,.avi,.mp3,.wav,.m4a,.ogg,.flac";
-const ACCEPTED_CHAT = ".json,.txt,.log";
-const MAX_MB = 500;
+const ACCEPTED_CHAT = ".json,.txt,.log,.csv";
+// Must match the backend MAX_UPLOAD_MB setting (.env / config.py).
+const MAX_MB = 2048;
+const MAX_LABEL = MAX_MB >= 1024 ? `${(MAX_MB / 1024).toFixed(0)} GB` : `${MAX_MB} MB`;
 
 export default function UploadZone() {
   const router = useRouter();
@@ -24,7 +26,10 @@ export default function UploadZone() {
 
   const handleFile = (f: File) => {
     if (f.size > MAX_MB * 1024 * 1024) {
-      toast.error(`File too large. Maximum size is ${MAX_MB} MB.`);
+      const sizeLabel = (f.size / 1024 / 1024 / 1024).toFixed(2);
+      toast.error(
+        `File too large (${sizeLabel} GB). Maximum upload size is ${MAX_LABEL}.`
+      );
       return;
     }
     setFile(f);
@@ -57,16 +62,15 @@ export default function UploadZone() {
         try {
           const chatResult = await meetingsApi.uploadChat(result.meeting_id, chatFile);
           toast.success(`Meeting uploaded! ${chatResult.inserted} chat messages attached.`);
-        } catch {
-          toast.warning("Meeting uploaded but chat log attachment failed.");
+        } catch (err: unknown) {
+          toast.warning(`Meeting uploaded but chat log attachment failed: ${getApiErrorMessage(err)}`);
         }
       } else {
         toast.success("Meeting uploaded! Processing has started.");
       }
       router.push(`/meetings/${result.meeting_id}`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Upload failed";
-      toast.error(msg);
+      toast.error(getApiErrorMessage(err, "Upload failed"));
       setUploading(false);
     }
   };
@@ -146,7 +150,7 @@ export default function UploadZone() {
                 Drop your meeting recording here
               </p>
               <p className="text-xs text-gray-400 mt-1">
-                or click to browse — MP4, MOV, MP3, WAV and more (max {MAX_MB} MB)
+                or click to browse — MP4, MOV, MP3, WAV and more (max {MAX_LABEL})
               </p>
             </div>
           </div>

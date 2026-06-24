@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from threading import Lock
 
-from app.config import settings
+from app.config import settings, resolve_device
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +37,46 @@ def _get_pipeline():
                     "pyannote/speaker-diarization-3.1",
                     use_auth_token=settings.pyannote_auth_token,
                 )
-                logger.info("Diarization pipeline loaded.")
+                # pyannote returns None (without raising) when the token is
+                # invalid or the gated model conditions haven't been accepted.
+                if _pipeline is None:
+                    _pipeline_load_failed = True
+                    logger.warning(
+                        "Diarization pipeline could not be loaded — the model is "
+                        "gated. Ensure PYANNOTE_AUTH_TOKEN is valid AND you have "
+                        "accepted the user conditions at "
+                        "https://hf.co/pyannote/speaker-diarization-3.1 and "
+                        "https://hf.co/pyannote/segmentation-3.0 . "
+                        "Falling back to single-speaker."
+                    )
+                else:
+                    device = resolve_device(settings.diarization_device)
+                    if device == "cuda":
+                        try:
+                            import torch
+                            _pipeline.to(torch.device("cuda"))
+                            logger.info("Diarization pipeline moved to GPU (cuda).")
+                        except Exception as e:
+                            logger.warning(
+                                "Could not move diarization pipeline to GPU (%s); "
+                                "running on CPU.", e
+                            )
+                    logger.info("Diarization pipeline loaded (device=%s).", device)
             except Exception as e:
                 logger.warning("Could not load diarization pipeline: %s. Falling back to single-speaker.", e)
                 _pipeline_load_failed = True
                 _pipeline = None
     return _pipeline
+
+
+def warmup() -> None:
+    """Eagerly load the diarization pipeline so the first request is fast."""
+    if not is_enabled():
+        return
+    try:
+        _get_pipeline()
+    except Exception as e:  # pragma: no cover - warmup is best-effort
+        logger.warning("Diarization warmup failed: %s", e)
 
 
 def diarize(audio_path: str) -> list[dict]:

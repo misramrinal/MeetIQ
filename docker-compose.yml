@@ -3,7 +3,10 @@ version: "3.9"
 services:
   # ── Frontend (Next.js) ────────────────────────────────────────────────
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
     container_name: meetmind-frontend
     ports:
       - "3000:3000"
@@ -24,6 +27,7 @@ services:
       - DATABASE_URL=postgresql://meetmind:meetmind@postgres:5432/meetmind
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
     volumes:
       - ./backend/app:/app/app
       - meetmind_uploads:/app/uploads

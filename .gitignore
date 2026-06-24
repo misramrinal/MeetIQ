@@ -15,8 +15,20 @@ dist/
 venv/
 .venv/
 env/
+
+# ── Environment files (secrets; .env.example templates stay tracked) ─
 .env
-!.env.example
+**/.env
+.env.local
+**/.env.local
+.env.development
+.env.production
+.env.test
+**/.env.development
+**/.env.production
+**/.env.test
+.env.*.local
+**/.env.*.local
 
 # ── IDE ─────────────────────────────────────────────────────────────
 .vscode/
@@ -58,9 +70,6 @@ sessions/
 # Qdrant local storage
 storage/
 
-# Backend .env (contains secrets)
-backend/.env
-
 # Logs
 *.log
 logs/
@@ -76,4 +85,5 @@ out/
 *.tsbuildinfo
 
 # ── Docker ──────────────────────────────────────────────────────────
-.dockerignore
+!.dockerignore
+!frontend/.dockerignore

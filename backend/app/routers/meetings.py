@@ -77,7 +77,7 @@ async def upload_meeting(
         title=title,
         date=datetime.utcnow().date(),
         recording_path=file_path,
-        status="pending",
+        status="processing",
     )
     db.add(meeting)
     db.commit()
@@ -301,8 +301,8 @@ async def upload_chat(
             detail=f"Unsupported chat file type '{ext}'. Allowed: {sorted(_ALLOWED_CHAT_EXTENSIONS)}",
         )
 
-    raw = await file.read(_CHAT_MAX_BYTES)
-    if len(raw) == _CHAT_MAX_BYTES:
+    raw = await file.read(_CHAT_MAX_BYTES + 1)
+    if len(raw) > _CHAT_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Chat file exceeds 10 MB limit")
 
     messages = chat_parser.parse_chat_file(raw, file.filename or "")
@@ -332,8 +332,11 @@ async def upload_chat(
     texts = [row.text for row in rows]
     try:
         vectors = embedder.embed_texts(texts)
-        points = [
-            {
+        points = []
+        for row, vec in zip(rows, vectors):
+            if not vec:
+                continue
+            points.append({
                 "id": row.id,
                 "vector": vec,
                 "payload": {
@@ -346,11 +349,10 @@ async def upload_chat(
                     "text": row.text,
                     "source_type": "chat",
                 },
-            }
-            for row, vec in zip(rows, vectors)
-        ]
-        qdrant_service.upsert_transcript_segments(points)
-        logger.info("[%s] Indexed %d chat messages in Qdrant.", meeting_id, len(points))
+            })
+        if points:
+            qdrant_service.upsert_transcript_segments(points)
+            logger.info("[%s] Indexed %d chat messages in Qdrant.", meeting_id, len(points))
     except Exception as e:
         logger.warning("[%s] Chat embedding/indexing failed (messages saved): %s", meeting_id, e)
 

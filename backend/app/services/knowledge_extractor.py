@@ -7,9 +7,33 @@ from app.services.llm_client import chat_json, LLMError
 
 logger = logging.getLogger(__name__)
 
+# Common keys LLMs use when they return an object instead of a plain string.
+_TEXT_KEYS = ("text", "name", "topic", "value", "title", "question", "issue", "summary")
 
-# Maximum transcript size sent to the LLM in one call.
-# For long meetings, we split into chunks.
+
+def coerce_text(value, *, keys: tuple[str, ...] = _TEXT_KEYS) -> str:
+    """Normalize LLM JSON values that may be str, number, or nested dict/list."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value).strip()
+    if isinstance(value, dict):
+        for key in keys:
+            nested = value.get(key)
+            if nested is not None:
+                result = coerce_text(nested, keys=keys)
+                if result:
+                    return result
+        return ""
+    if isinstance(value, list):
+        parts = [coerce_text(v, keys=keys) for v in value]
+        return " ".join(p for p in parts if p).strip()
+    return ""
+
+
+# Maximum transcript size sent to the LLM in one call.# For long meetings, we split into chunks.
 MAX_CHUNK_CHARS = 12000
 
 SYSTEM_PROMPT = """You are an expert meeting analyst. \
@@ -69,7 +93,7 @@ def _format_transcript(segments: list[dict]) -> str:
     for seg in segments:
         speaker = seg.get("speaker", "Speaker")
         start = seg.get("start_time", seg.get("start", 0.0))
-        text = seg.get("text", "").strip()
+        text = coerce_text(seg.get("text"))
         if text:
             lines.append(f"[{speaker} at {start:.1f}s]: {text}")
     return "\n".join(lines)
@@ -113,40 +137,52 @@ def _merge_results(results: list[dict]) -> dict:
     summaries: list[str] = []
     seen_topics: set[str] = set()
     seen_unresolved: set[str] = set()
-    entity_map: dict[tuple[str, str], int] = {}
+    entity_map: dict[tuple[str, str], dict] = {}
 
     for r in results:
-        merged["decisions"].extend(r.get("decisions") or [])
-        merged["action_items"].extend(r.get("action_items") or [])
+        for item in (r.get("decisions") or []):
+            if isinstance(item, dict):
+                merged["decisions"].append(item)
+        for item in (r.get("action_items") or []):
+            if isinstance(item, dict):
+                merged["action_items"].append(item)
 
         for topic in (r.get("topics") or []):
-            t = (topic or "").strip()
+            t = coerce_text(topic, keys=("topic", "name", "text", "value", "title"))
             if t and t.lower() not in seen_topics:
                 seen_topics.add(t.lower())
                 merged["topics"].append(t)
 
         for u in (r.get("unresolved") or []):
-            u_clean = (u or "").strip()
+            u_clean = coerce_text(u, keys=("text", "question", "issue", "value", "name"))
             if u_clean and u_clean.lower() not in seen_unresolved:
                 seen_unresolved.add(u_clean.lower())
                 merged["unresolved"].append(u_clean)
 
         for ent in (r.get("entities") or []):
-            name = (ent.get("name") or "").strip()
-            etype = (ent.get("type") or "").strip().upper()
+            if isinstance(ent, str):
+                name, etype = ent.strip(), "ORG"
+            elif isinstance(ent, dict):
+                name = coerce_text(ent.get("name"), keys=("name", "text"))
+                etype = coerce_text(ent.get("type"), keys=("type",)).upper()
+            else:
+                continue
             if not name or etype not in {"PERSON", "ORG", "PRODUCT", "TECHNOLOGY"}:
                 continue
             key = (name.lower(), etype)
-            entity_map[key] = entity_map.get(key, 0) + int(ent.get("mentions") or 1)
+            if key not in entity_map:
+                entity_map[key] = {"name": name, "type": etype, "mentions": 0}
+            mentions = ent.get("mentions") if isinstance(ent, dict) else 1
+            entity_map[key]["mentions"] += int(mentions or 1)
 
-        s = (r.get("summary") or "").strip()
+        s = coerce_text(r.get("summary"), keys=("summary", "text", "value"))
         if s:
             summaries.append(s)
 
     merged["summary"] = " ".join(summaries).strip()
     merged["entities"] = [
-        {"name": name, "type": etype, "mentions": count}
-        for (name, etype), count in sorted(entity_map.items(), key=lambda x: -x[1])
+        ent
+        for ent in sorted(entity_map.values(), key=lambda x: -x["mentions"])
     ][:20]
     return merged
 

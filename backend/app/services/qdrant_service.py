@@ -7,6 +7,7 @@ from threading import Lock
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue,
+    FilterSelector, SearchRequest as QdrantSearchRequest,
 )
 
 from app.config import settings
@@ -28,6 +29,7 @@ def get_client() -> QdrantClient:
             kwargs = {
                 "host": settings.qdrant_host,
                 "port": settings.qdrant_port,
+                "check_compatibility": False,
             }
             if settings.qdrant_api_key:
                 kwargs["api_key"] = settings.qdrant_api_key
@@ -76,6 +78,7 @@ def upsert_transcript_segments(points: list[dict]) -> None:
           "payload":  {meeting_id, speaker, start_time, end_time, text, meeting_title, ...}
         }
     """
+    points = [p for p in points if p.get("vector")]
     if not points:
         return
     client = get_client()
@@ -93,17 +96,19 @@ def search_transcripts(
     meeting_id: str | None = None,
 ) -> list[dict]:
     """Search transcript segments by vector similarity."""
+    if not query_vector:
+        return []
     client = get_client()
     qfilter = None
     if meeting_id:
         qfilter = Filter(
             must=[FieldCondition(key="meeting_id", match=MatchValue(value=meeting_id))]
         )
-    hits = client.search(
+    hits = _search_points(
+        client,
         collection_name=TRANSCRIPT_COLLECTION,
         query_vector=query_vector,
         limit=limit,
-        with_payload=True,
         query_filter=qfilter,
     )
     return [{"score": h.score, **(h.payload or {})} for h in hits]
@@ -113,6 +118,7 @@ def search_transcripts(
 
 def upsert_frames(points: list[dict]) -> None:
     """Upsert video-frame CLIP vectors."""
+    points = [p for p in points if p.get("vector")]
     if not points:
         return
     client = get_client()
@@ -130,17 +136,19 @@ def search_frames(
     meeting_id: str | None = None,
 ) -> list[dict]:
     """Search video frames by CLIP vector similarity."""
+    if not query_vector:
+        return []
     client = get_client()
     qfilter = None
     if meeting_id:
         qfilter = Filter(
             must=[FieldCondition(key="meeting_id", match=MatchValue(value=meeting_id))]
         )
-    hits = client.search(
+    hits = _search_points(
+        client,
         collection_name=FRAME_COLLECTION,
         query_vector=query_vector,
         limit=limit,
-        with_payload=True,
         query_filter=qfilter,
     )
     return [{"score": h.score, **(h.payload or {})} for h in hits]
@@ -154,7 +162,32 @@ def delete_meeting_vectors(meeting_id: str) -> None:
     )
     for collection in (TRANSCRIPT_COLLECTION, FRAME_COLLECTION):
         try:
-            client.delete(collection_name=collection, points_selector=qfilter)
+            client.delete(
+                collection_name=collection,
+                points_selector=FilterSelector(filter=qfilter),
+            )
             logger.info("Deleted vectors for meeting %s from %s", meeting_id, collection)
         except Exception as e:
             logger.warning("Could not delete from %s: %s", collection, e)
+
+
+def _search_points(
+    client: QdrantClient,
+    *,
+    collection_name: str,
+    query_vector: list[float],
+    limit: int,
+    query_filter: Filter | None,
+):
+    """Search using the legacy endpoint supported by the bundled Qdrant image."""
+    request = QdrantSearchRequest(
+        vector=query_vector,
+        filter=query_filter,
+        limit=limit,
+        with_payload=True,
+    )
+    response = client.http.search_api.search_points(
+        collection_name=collection_name,
+        search_request=request,
+    )
+    return response.result or []

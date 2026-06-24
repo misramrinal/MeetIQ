@@ -1,4 +1,4 @@
-"""Audio extraction and transcription using FFmpeg + openai-whisper."""
+"""Audio extraction and transcription using FFmpeg + faster-whisper."""
 from __future__ import annotations
 
 import logging
@@ -6,7 +6,10 @@ import os
 import subprocess
 from threading import Lock
 
-from app.config import settings
+from app.config import settings, resolve_device, resolve_whisper_compute_type
+
+# Use all available CPU cores for transcription (faster-whisper default is 4).
+_CPU_THREADS = os.cpu_count() or 4
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +22,46 @@ def _get_whisper():
     global _whisper_model
     with _whisper_lock:
         if _whisper_model is None:
-            logger.info("Loading Whisper model: %s", settings.whisper_model)
-            import whisper
-            _whisper_model = whisper.load_model(settings.whisper_model)
-            logger.info("Whisper model loaded.")
+            device = resolve_device(settings.whisper_device)
+            compute_type = resolve_whisper_compute_type(device)
+            logger.info(
+                "Loading faster-whisper model: %s (device=%s, compute_type=%s)",
+                settings.whisper_model, device, compute_type,
+            )
+            from faster_whisper import WhisperModel
+            try:
+                _whisper_model = WhisperModel(
+                    settings.whisper_model,
+                    device=device,
+                    compute_type=compute_type,
+                    cpu_threads=_CPU_THREADS,
+                )
+            except Exception as e:
+                # GPU init can fail if CUDA/cuDNN libs are missing — fall back
+                # to CPU so transcription always works.
+                if device != "cpu":
+                    logger.warning(
+                        "Whisper GPU init failed (%s); falling back to CPU int8.", e
+                    )
+                    _whisper_model = WhisperModel(
+                        settings.whisper_model,
+                        device="cpu",
+                        compute_type="int8",
+                        cpu_threads=_CPU_THREADS,
+                    )
+                else:
+                    raise
+            logger.info("Whisper model loaded (device=%s, cpu_threads=%d).",
+                        device, _CPU_THREADS)
     return _whisper_model
+
+
+def warmup() -> None:
+    """Eagerly load the Whisper model so the first request doesn't pay for it."""
+    try:
+        _get_whisper()
+    except Exception as e:  # pragma: no cover - warmup is best-effort
+        logger.warning("Whisper warmup failed: %s", e)
 
 
 def extract_audio(video_path: str, output_path: str) -> str:
@@ -57,7 +95,7 @@ def extract_audio(video_path: str, output_path: str) -> str:
 
 def transcribe(audio_path: str) -> tuple[list[dict], float]:
     """
-    Transcribe audio file using openai-whisper.
+    Transcribe audio file using faster-whisper.
 
     Returns:
         (segments, duration_seconds)
@@ -66,21 +104,33 @@ def transcribe(audio_path: str) -> tuple[list[dict], float]:
     model = _get_whisper()
     logger.info("Transcribing: %s", audio_path)
 
-    result = model.transcribe(audio_path, verbose=False)
+    # Performance tuning:
+    #   - beam_size=1 (greedy) is ~2-4x faster than the default beam search
+    #     with only a small accuracy cost on clear speech.
+    #   - vad_filter skips silence so we don't transcribe dead air (big win on
+    #     real meetings with pauses).
+    #   - condition_on_previous_text=False avoids slow repetition loops.
+    segments_iter, info = model.transcribe(
+        audio_path,
+        word_timestamps=False,
+        beam_size=1,
+        vad_filter=True,
+        condition_on_previous_text=False,
+    )
 
     segments: list[dict] = []
-    for seg in result.get("segments", []):
+    for seg in segments_iter:
         # avg_logprob is negative; shift by +1 to get a rough 0..1 confidence
-        confidence = max(0.0, min(1.0, seg.get("avg_logprob", -0.5) + 1.0))
+        avg_logprob = getattr(seg, "avg_logprob", -0.5)
+        confidence = max(0.0, min(1.0, avg_logprob + 1.0))
         segments.append({
-            "text": seg["text"].strip(),
-            "start": float(seg["start"]),
-            "end": float(seg["end"]),
+            "text": seg.text.strip(),
+            "start": float(seg.start),
+            "end": float(seg.end),
             "confidence": confidence,
         })
 
-    # openai-whisper returns total duration via the last segment end or audio info
-    duration = float(segments[-1]["end"]) if segments else 0.0
+    duration = float(getattr(info, "duration", 0.0) or (segments[-1]["end"] if segments else 0.0))
     logger.info("Transcription done: %d segments, %.1fs of audio", len(segments), duration)
     return segments, duration
 

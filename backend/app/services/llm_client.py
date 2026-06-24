@@ -1,16 +1,4 @@
-"""
-QGenie LLM client.
-
-QGenie exposes an OpenAI-compatible /chat/completions endpoint and routes
-requests to many underlying models (Vertex AI Gemini, Anthropic Claude, etc.).
-Select the model via LLM_MODEL_NAME, e.g. "vertexai::gemini-3.1-pro-preview".
-
-Pattern follows jira_hop_detector.py:
-  - POST {QGENIE_ENDPOINT}/chat/completions
-  - Authorization: Bearer {QGENIE_API_KEY}
-  - verify=False  (internal cert)
-  - Retry on 5xx / timeout with exponential backoff
-"""
+"""Portable LLM client for Ollama and OpenAI-compatible chat APIs."""
 from __future__ import annotations
 
 import json
@@ -20,22 +8,18 @@ import time
 from typing import Any
 
 import requests
-import urllib3
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 LLM_MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2  # seconds; wait = base ** (attempt - 1)
 
 
 class LLMError(RuntimeError):
-    """Raised when a QGenie call fails after all retries."""
+    """Raised when an LLM provider call fails after all retries."""
 
-
-# ── Retry helper ─────────────────────────────────────────────────────────
 
 def _retry(call_fn, max_retries: int, label: str) -> Any:
     """Call call_fn(), retrying on transient network errors and HTTP 5xx."""
@@ -54,12 +38,12 @@ def _retry(call_fn, max_retries: int, label: str) -> Any:
             time.sleep(wait)
         except requests.HTTPError as e:
             status = e.response.status_code if e.response is not None else 0
+            body = e.response.text[:300] if e.response is not None else ""
             if status < 500:
-                body = e.response.text[:300] if e.response is not None else ""
                 raise LLMError(f"{label} HTTP {status}: {body}") from e
             last_exc = e
             if attempt == max_retries:
-                raise LLMError(f"{label} HTTP {status} after {attempt} attempt(s)") from e
+                raise LLMError(f"{label} HTTP {status} after {attempt} attempt(s): {body}") from e
             wait = RETRY_BACKOFF_BASE ** (attempt - 1)
             logger.warning("[%s] HTTP %d, retry %d/%d in %ds",
                            label, status, attempt, max_retries, wait)
@@ -68,17 +52,56 @@ def _retry(call_fn, max_retries: int, label: str) -> Any:
         raise LLMError(f"{label} exhausted retries") from last_exc
 
 
-# ── QGenie call ──────────────────────────────────────────────────────────
+def _call_ollama(
+    messages: list[dict],
+    temperature: float,
+    max_tokens: int,
+    json_mode: bool = False,
+) -> str:
+    """Call a local Ollama chat model."""
+    url = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
+    payload = {
+        "model": settings.llm_model_name,
+        "messages": messages,
+        "stream": False,
+        # Keep the model resident in RAM between requests so back-to-back
+        # meetings don't pay the multi-second model (re)load cost each time.
+        "keep_alive": "30m",
+        "options": {
+            "temperature": temperature,
+            "num_predict": max_tokens,
+        },
+    }
+    if json_mode:
+        # Native JSON-constrained decoding: avoids stray prose / code fences
+        # and reduces failed parses (and the retries they cause).
+        payload["format"] = "json"
 
-def _call_qgenie(messages: list[dict], temperature: float, max_tokens: int) -> str:
-    """
-    POST to QGenie /chat/completions.
+    def _do_call() -> str:
+        response = requests.post(url, json=payload, timeout=settings.llm_timeout_seconds)
+        response.raise_for_status()
+        data = response.json()
+        content = data.get("message", {}).get("content", "")
+        if not content:
+            raise LLMError("Ollama returned empty content")
+        return content
 
-    Mirrors the call_llm() pattern from jira_hop_detector.py.
-    """
-    url = f"{settings.qgenie_endpoint.rstrip('/')}/chat/completions"
+    return _retry(_do_call, LLM_MAX_RETRIES, "Ollama")
+
+
+def _call_openai_compatible(
+    messages: list[dict],
+    temperature: float,
+    max_tokens: int,
+    json_mode: bool = False,
+) -> str:
+    """Call OpenAI or any OpenAI-compatible /chat/completions endpoint."""
+    if not settings.openai_api_key:
+        raise LLMError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+
+    url = f"{settings.openai_base_url.rstrip('/')}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {settings.qgenie_api_key}",
+        "Authorization": f"Bearer {settings.openai_api_key}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -87,60 +110,61 @@ def _call_qgenie(messages: list[dict], temperature: float, max_tokens: int) -> s
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
 
     def _do_call() -> str:
-        r = requests.post(
+        response = requests.post(
             url,
             headers=headers,
             json=payload,
             timeout=settings.llm_timeout_seconds,
-            verify=False,   # QGenie uses an internal cert — same as jira_hop_detector.py
+            verify=settings.openai_ssl_verify,
         )
-        r.raise_for_status()
-        data = r.json()
+        response.raise_for_status()
+        data = response.json()
         choices = data.get("choices") or []
         if not choices:
-            raise LLMError("QGenie returned no choices")
+            raise LLMError("OpenAI-compatible provider returned no choices")
         content = choices[0].get("message", {}).get("content", "")
         if not content:
-            raise LLMError("QGenie returned empty content")
+            raise LLMError("OpenAI-compatible provider returned empty content")
         return content
 
-    return _retry(_do_call, LLM_MAX_RETRIES, "QGenie")
+    return _retry(_do_call, LLM_MAX_RETRIES, "OpenAI-compatible")
 
-
-# ── Public interface ─────────────────────────────────────────────────────
 
 def chat(
     messages: list[dict],
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    json_mode: bool = False,
 ) -> str:
     """
-    Send a chat-completions request to QGenie and return the response text.
+    Send a chat request to the configured LLM provider and return response text.
 
-    Args:
-        messages: List of {"role": "system"|"user"|"assistant", "content": str}
-        temperature: Sampling temperature (default: settings.llm_temperature)
-        max_tokens:  Max output tokens   (default: settings.llm_max_tokens)
-
-    Returns:
-        The assistant's text response.
-
-    Raises:
-        LLMError: On any QGenie failure.
+    Supported providers:
+      - ollama: local Ollama /api/chat
+      - openai: OpenAI or compatible /chat/completions endpoint
     """
     temp = temperature if temperature is not None else settings.llm_temperature
     toks = max_tokens if max_tokens is not None else settings.llm_max_tokens
+    provider = settings.llm_provider.lower().strip()
 
     t0 = time.time()
-    logger.info("QGenie call: model=%s, messages=%d", settings.llm_model_name, len(messages))
+    logger.info("LLM call: provider=%s, model=%s, messages=%d",
+                provider, settings.llm_model_name, len(messages))
 
-    result = _call_qgenie(messages, temp, toks)
+    if provider == "ollama":
+        result = _call_ollama(messages, temp, toks, json_mode)
+    elif provider == "openai":
+        result = _call_openai_compatible(messages, temp, toks, json_mode)
+    else:
+        raise LLMError("Unsupported LLM_PROVIDER. Use 'ollama' or 'openai'.")
 
     elapsed = time.time() - t0
-    logger.info("QGenie call done in %.1fs (%d chars)", elapsed, len(result))
+    logger.info("LLM call done in %.1fs (%d chars)", elapsed, len(result))
     return result
 
 
@@ -153,12 +177,10 @@ def chat_json(
     """
     Send a chat request and parse the response as JSON.
 
-    Handles common LLM quirks: markdown code fences, extra text around JSON.
-
-    Raises:
-        LLMError: If the response cannot be parsed as JSON.
+    Requests native JSON-constrained output from the provider and still
+    handles common LLM quirks (markdown code fences, extra text around JSON).
     """
-    raw = chat(messages, temperature=temperature, max_tokens=max_tokens)
+    raw = chat(messages, temperature=temperature, max_tokens=max_tokens, json_mode=True)
     return _parse_json(raw)
 
 
@@ -173,7 +195,6 @@ def _parse_json(raw: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # Fallback: find the first {...} block
     match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if match:
         try:
@@ -181,4 +202,4 @@ def _parse_json(raw: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    raise LLMError(f"Could not parse JSON from QGenie response: {raw[:300]}")
+    raise LLMError(f"Could not parse JSON from LLM response: {raw[:300]}")

@@ -11,13 +11,7 @@ import type {
   VisualSearchResponse,
 } from "./types";
 
-// Always call the backend directly — bypasses Next.js proxy issues
-const BACKEND_URL =
-  typeof window !== "undefined"
-    ? (window.__NEXT_DATA__?.props?.pageProps?.backendUrl ||
-       process.env.NEXT_PUBLIC_API_URL ||
-       "http://localhost:8000")
-    : (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000");
+export const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const API_BASE = `${BACKEND_URL}/api/v1`;
 
@@ -48,7 +42,6 @@ export const meetingsApi = {
     form.append("file", file);
     return api
       .post("/meetings/upload", form, {
-        headers: { "Content-Type": "multipart/form-data" },
         timeout: 300000, // 5 minutes for large files
         onUploadProgress: (e) => {
           if (onProgress && e.total) {
@@ -81,12 +74,25 @@ export const meetingsApi = {
     const form = new FormData();
     form.append("file", file);
     return api
-      .post(`/meetings/${id}/chat`, form, {
-        headers: { "Content-Type": "multipart/form-data" },
-      })
+      .post(`/meetings/${id}/chat`, form)
       .then((r) => r.data);
   },
 };
+
+export function getApiErrorMessage(err: unknown, fallback = "Request failed"): string {
+  if (axios.isAxiosError(err)) {
+    const detail = err.response?.data?.detail;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      return detail
+        .map((item) => item?.msg)
+        .filter(Boolean)
+        .join("; ") || fallback;
+    }
+    return err.message || fallback;
+  }
+  return err instanceof Error ? err.message : fallback;
+}
 
 // ── Search ───────────────────────────────────────────────────────────────
 

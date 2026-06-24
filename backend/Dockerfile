@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application
 COPY app ./app
+COPY scripts ./scripts
 
 # Create runtime directories
 RUN mkdir -p uploads frames audio
