@@ -78,6 +78,8 @@ async def upload_meeting(
         date=datetime.utcnow().date(),
         recording_path=file_path,
         status="processing",
+        processing_stage="queued",
+        progress_percent=0,
     )
     db.add(meeting)
     db.commit()
@@ -89,6 +91,8 @@ async def upload_meeting(
     return UploadResponse(
         meeting_id=meeting.id,
         status="processing",
+        processing_stage="queued",
+        progress_percent=0,
         message="Meeting uploaded and queued for processing.",
     )
 
@@ -127,6 +131,8 @@ def get_meeting_status(meeting_id: str, db: Session = Depends(get_db)):
     return MeetingStatusOut(
         meeting_id=meeting.id,
         status=meeting.status,
+        processing_stage=meeting.processing_stage,
+        progress_percent=meeting.progress_percent or 0,
         error_message=meeting.error_message,
     )
 
@@ -168,6 +174,34 @@ _MIME_TYPES = {
 _STREAM_CHUNK = 1024 * 1024  # 1 MB
 
 
+def _parse_range_header(range_header: str, file_size: int) -> tuple[int, int] | None:
+    """Parse a single HTTP bytes range, returning inclusive start/end."""
+    if not range_header.startswith("bytes=") or "," in range_header:
+        return None
+
+    spec = range_header.removeprefix("bytes=").strip()
+    if "-" not in spec:
+        return None
+
+    start_s, end_s = spec.split("-", 1)
+    try:
+        if start_s == "":
+            suffix_len = int(end_s)
+            if suffix_len <= 0:
+                return None
+            start = max(file_size - suffix_len, 0)
+            end = file_size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s else file_size - 1
+    except ValueError:
+        return None
+
+    if start < 0 or start >= file_size or end < start:
+        return None
+    return start, min(end, file_size - 1)
+
+
 @router.get("/{meeting_id}/recording")
 def stream_recording(meeting_id: str, request: Request, db: Session = Depends(get_db)):
     """Stream the original recording file with HTTP Range support for video seeking."""
@@ -184,15 +218,14 @@ def stream_recording(meeting_id: str, request: Request, db: Session = Depends(ge
 
     range_header = request.headers.get("range")
     if range_header:
-        start, end = 0, file_size - 1
-        try:
-            parts = range_header.replace("bytes=", "").split("-")
-            start = int(parts[0])
-            if parts[1]:
-                end = int(parts[1])
-        except Exception:
-            pass
-        end = min(end, file_size - 1)
+        parsed = _parse_range_header(range_header, file_size)
+        if parsed is None:
+            raise HTTPException(
+                status_code=416,
+                detail="Invalid Range header",
+                headers={"Content-Range": f"bytes */{file_size}"},
+            )
+        start, end = parsed
         length = end - start + 1
 
         def iter_range():

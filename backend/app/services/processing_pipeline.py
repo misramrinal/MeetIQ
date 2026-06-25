@@ -44,6 +44,13 @@ class ProcessingTimeout(RuntimeError):
     """Raised when processing exceeds PROCESSING_TIMEOUT_SECONDS."""
 
 
+def _set_progress(meeting: Meeting, db: Session, stage: str, percent: int) -> None:
+    """Persist user-visible processing progress."""
+    meeting.processing_stage = stage
+    meeting.progress_percent = max(0, min(100, int(percent)))
+    db.commit()
+
+
 def _check_deadline(deadline: float, stage: str) -> None:
     """Abort the pipeline if the wall-clock deadline has passed.
 
@@ -74,7 +81,7 @@ def process_meeting(meeting_id: str) -> None:
             return
 
         meeting.status = "processing"
-        db.commit()
+        _set_progress(meeting, db, "starting", 1)
         logger.info("[%s] Processing started: %s", meeting_id, meeting.title)
 
         deadline = (
@@ -85,6 +92,8 @@ def process_meeting(meeting_id: str) -> None:
         _run_pipeline(meeting, db, deadline)
 
         meeting.status = "done"
+        meeting.processing_stage = "complete"
+        meeting.progress_percent = 100
         meeting.processed_at = datetime.utcnow()
         db.commit()
         logger.info("[%s] Processing complete.", meeting_id)
@@ -95,6 +104,7 @@ def process_meeting(meeting_id: str) -> None:
             meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
             if meeting:
                 meeting.status = "failed"
+                meeting.processing_stage = "failed"
                 meeting.error_message = str(e)[:1000]
                 db.commit()
         except Exception:
@@ -110,6 +120,7 @@ def _run_pipeline(meeting: Meeting, db: Session, deadline: float = 0.0) -> None:
     video_path = meeting.recording_path
 
     # ── Step 1: Extract audio ────────────────────────────────────────────
+    _set_progress(meeting, db, "extracting_audio", 5)
     audio_path = os.path.join(settings.audio_dir, f"{meeting_id_str}.wav")
     audio_processor.extract_audio(video_path, audio_path)
     meeting.audio_path = audio_path
@@ -117,11 +128,12 @@ def _run_pipeline(meeting: Meeting, db: Session, deadline: float = 0.0) -> None:
     duration = audio_processor.get_video_duration(video_path)
     if duration:
         meeting.duration_seconds = int(duration)
-    db.commit()
+    _set_progress(meeting, db, "audio_extracted", 12)
 
     _check_deadline(deadline, "transcription")
 
     # ── Step 2 + 3: Transcribe and diarize concurrently ──────────────────
+    _set_progress(meeting, db, "transcribing_and_diarizing", 18)
     # Both only need the audio file and are independent, so overlap them.
     with ThreadPoolExecutor(max_workers=1) as pool:
         diarize_future = pool.submit(diarizer.diarize, audio_path)
@@ -130,7 +142,9 @@ def _run_pipeline(meeting: Meeting, db: Session, deadline: float = 0.0) -> None:
 
     if audio_duration and not meeting.duration_seconds:
         meeting.duration_seconds = int(audio_duration)
-        db.commit()
+        _set_progress(meeting, db, "transcribed", 35)
+    else:
+        _set_progress(meeting, db, "transcribed", 35)
 
     if not raw_segments:
         raise RuntimeError("No transcript segments produced from the uploaded recording.")
@@ -138,9 +152,11 @@ def _run_pipeline(meeting: Meeting, db: Session, deadline: float = 0.0) -> None:
     _check_deadline(deadline, "knowledge extraction & indexing")
 
     # ── Step 4: Align transcript with speakers ───────────────────────────
+    _set_progress(meeting, db, "aligning_speakers", 42)
     aligned = diarizer.align_speakers(raw_segments, speakers)
 
     # ── Step 5: Persist transcript segments ──────────────────────────────
+    _set_progress(meeting, db, "saving_transcript", 48)
     segment_rows: list[TranscriptSegment] = []
     for seg in aligned:
         row = TranscriptSegment(
@@ -154,13 +170,13 @@ def _run_pipeline(meeting: Meeting, db: Session, deadline: float = 0.0) -> None:
         )
         segment_rows.append(row)
         db.add(row)
-    db.commit()
+    _set_progress(meeting, db, "transcript_saved", 55)
     logger.info("[%s] Saved %d transcript segments.", meeting_id_str, len(segment_rows))
 
     # Participants: distinct speakers
     participants = sorted({row.speaker for row in segment_rows if row.speaker})
     meeting.participants = participants
-    db.commit()
+    _set_progress(meeting, db, "indexing_and_extracting_knowledge", 60)
 
     # Snapshot transcript data as plain dicts so background threads never touch
     # the SQLAlchemy session (which is owned exclusively by this main thread).
@@ -190,13 +206,16 @@ def _run_pipeline(meeting: Meeting, db: Session, deadline: float = 0.0) -> None:
 
         # ── Steps 7-9: Frames + OCR + CLIP (main thread, uses DB) ────────
         if settings.enable_frame_extraction:
+            _set_progress(meeting, db, "processing_video_frames", 68)
             _process_video_frames(meeting, db)
 
         # Surface indexing errors (logged inside), then collect knowledge.
         index_future.result()
+        _set_progress(meeting, db, "extracting_knowledge", 82)
         extracted = knowledge_future.result()
 
     # ── Step 11: Save decisions, action items, summary ───────────────────
+    _set_progress(meeting, db, "saving_knowledge", 90)
     _persist_knowledge(meeting, extracted, db)
 
 
@@ -332,19 +351,28 @@ def _persist_knowledge(meeting: Meeting, extracted: dict, db: Session) -> None:
     entities = extracted.get("entities") or []
     summary = coerce_text(extracted.get("summary"), keys=("summary", "text")) or None
 
+    saved_decisions = 0
+    saved_actions = 0
+
     for d in decisions:
         if not isinstance(d, dict):
             continue
         try:
+            text = _clean_text(coerce_text(d.get("text"), keys=("text", "decision", "value")))
+            if not text:
+                continue
+            made_by = _clean_text(coerce_text(d.get("made_by"), keys=("made_by", "name", "speaker"))) or None
+            context = _clean_text(coerce_text(d.get("context"), keys=("context", "text", "value"))) or None
             db.add(Decision(
                 id=str(uuid.uuid4()),
                 meeting_id=meeting.id,
-                text=coerce_text(d.get("text"), keys=("text", "decision", "value"))[:5000],
-                made_by=coerce_text(d.get("made_by"), keys=("made_by", "name", "speaker")) or None,
+                text=text[:5000],
+                made_by=made_by,
                 timestamp=_safe_float(d.get("timestamp")),
-                confidence=float(d.get("confidence") or 0.0),
-                context=d.get("context"),
+                confidence=_safe_confidence(d.get("confidence")),
+                context=context,
             ))
+            saved_decisions += 1
         except Exception as e:
             logger.warning("Skipping bad decision row: %s", e)
 
@@ -352,27 +380,32 @@ def _persist_knowledge(meeting: Meeting, extracted: dict, db: Session) -> None:
         if not isinstance(a, dict):
             continue
         try:
+            text = _clean_text(coerce_text(a.get("text"), keys=("text", "action", "task", "value")))
+            if not text:
+                continue
+            owner = _clean_text(coerce_text(a.get("owner"), keys=("owner", "name", "assignee"))) or None
             due = _parse_date(a.get("due_date"))
             db.add(ActionItem(
                 id=str(uuid.uuid4()),
                 meeting_id=meeting.id,
-                text=coerce_text(a.get("text"), keys=("text", "action", "task", "value"))[:5000],
-                owner=coerce_text(a.get("owner"), keys=("owner", "name", "assignee")) or None,
+                text=text[:5000],
+                owner=owner,
                 due_date=due,
                 timestamp=_safe_float(a.get("timestamp")),
                 status="open",
             ))
+            saved_actions += 1
         except Exception as e:
             logger.warning("Skipping bad action_item row: %s", e)
 
     meeting.summary = summary
-    meeting.topics = topics
-    meeting.unresolved = unresolved
+    meeting.topics = _clean_text_list(topics)
+    meeting.unresolved = _clean_text_list(unresolved)
     meeting.entities = entities
     db.commit()
     logger.info(
         "[%s] Saved %d decision(s), %d action item(s), %d topic(s).",
-        meeting.id, len(decisions), len(actions), len(topics),
+        meeting.id, saved_decisions, saved_actions, len(meeting.topics),
     )
 
 
@@ -385,6 +418,34 @@ def _safe_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _safe_confidence(value) -> float:
+    try:
+        if value is None:
+            return 0.0
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _clean_text(value: str | None) -> str:
+    text = (value or "").strip()
+    if text.lower() in {"none", "null", "n/a", "na", "unknown", "not specified"}:
+        return ""
+    return text
+
+
+def _clean_text_list(values) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        text = _clean_text(coerce_text(value))
+        key = text.lower()
+        if text and key not in seen:
+            seen.add(key)
+            cleaned.append(text)
+    return cleaned
 
 
 def _parse_date(value) -> date | None:

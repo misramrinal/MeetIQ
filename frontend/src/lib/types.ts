@@ -92,8 +92,11 @@ export interface ChatMessage {
 
 // ── Search ───────────────────────────────────────────────────────────────
 
+export type SearchStatus = "answered" | "no_evidence" | "non_search" | "llm_error";
+
 export interface SearchSource {
-  type: "transcript" | "frame";
+  type: "transcript" | "chat" | "decision" | "action_item" | "frame";
+  source_id: string | null;
   meeting_id: string | null;
   meeting_title: string | null;
   speaker: string | null;
@@ -104,12 +107,18 @@ export interface SearchSource {
   frame_path: string | null;
   timestamp: number | null;
   ocr_text: string | null;
+  made_by: string | null;
+  owner: string | null;
+  due_date: string | null;
+  status: string | null;
   score: number;
 }
 
 export interface SearchResponse {
   query: string;
   answer: string;
+  status: SearchStatus;
+  confidence: number;
   sources: SearchSource[];
 }
 

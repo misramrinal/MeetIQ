@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
+import type ReactPlayerInstance from "react-player";
 import {
   ArrowLeft, RefreshCw, Trash2, Loader2,
   MessageSquare, Lightbulb, CheckSquare, FileText, Image as ImageIcon,
@@ -19,7 +20,7 @@ import { formatDate, formatDuration } from "@/lib/utils";
 import { toast } from "sonner";
 import type { ActionItem } from "@/lib/types";
 
-// Dynamically import ReactPlayer to avoid SSR issues
+// Dynamically import ReactPlayer to avoid SSR issues.
 const ReactPlayer = dynamic(() => import("react-player/lazy"), { ssr: false });
 
 // The backend marks timeouts with a message like
@@ -46,7 +47,7 @@ export default function MeetingDetailPage() {
 
   const [activeTab, setActiveTab] = useState("transcript");
   const [currentTime, setCurrentTime] = useState(0);
-  const playerRef = useRef<{ seekTo: (t: number) => void } | null>(null);
+  const playerRef = useRef<ReactPlayerInstance | null>(null);
   const prevStatusRef = useRef<string | null>(null);
 
   const { data: meeting, isLoading, isError } = useQuery({
@@ -239,12 +240,14 @@ export default function MeetingDetailPage() {
           {/* Video player */}
           <div className="bg-black">
             <ReactPlayer
-              ref={playerRef as React.RefObject<unknown>}
               url={recordingUrl}
               controls
               width="100%"
               height="280px"
-              onProgress={({ playedSeconds }) => setCurrentTime(playedSeconds)}
+              onReady={(player) => {
+                playerRef.current = player;
+              }}
+              onProgress={({ playedSeconds }: { playedSeconds: number }) => setCurrentTime(playedSeconds)}
               config={{
                 file: { attributes: { crossOrigin: "anonymous" } },
               }}

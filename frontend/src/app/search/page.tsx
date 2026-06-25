@@ -10,6 +10,28 @@ import type { SearchResponse, VisualSearchResponse } from "@/lib/types";
 
 type SearchMode = "text" | "visual";
 
+const sourceLabel = (type: string) => {
+  switch (type) {
+    case "action_item":
+      return "Action item";
+    case "decision":
+      return "Decision";
+    case "chat":
+      return "Chat";
+    case "frame":
+      return "Frame";
+    default:
+      return "Transcript";
+  }
+};
+
+const resultStatusLabel = (result: SearchResponse) => {
+  if (result.status === "answered") return `${Math.round(result.confidence * 100)}% confidence`;
+  if (result.status === "non_search") return "Ready for a meeting question";
+  if (result.status === "llm_error") return "Answer generation failed";
+  return "No matching evidence";
+};
+
 export default function SearchPage() {
   const [mode, setMode] = useState<SearchMode>("text");
   const [query, setQuery] = useState("");
@@ -103,7 +125,10 @@ export default function SearchPage() {
         <div className="space-y-4 animate-fade-in">
           {/* Answer */}
           <div className="card p-5">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Answer</p>
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Answer</p>
+              <span className="text-xs text-gray-400">{resultStatusLabel(textResult)}</span>
+            </div>
             <p className="text-gray-800 leading-relaxed">{textResult.answer}</p>
           </div>
 
@@ -116,6 +141,9 @@ export default function SearchPage() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-semibold text-gray-500">
+                          {sourceLabel(src.type)}
+                        </span>
                         {src.speaker && (
                           <span className="text-xs font-semibold text-blue-600">{src.speaker}</span>
                         )}
@@ -129,6 +157,16 @@ export default function SearchPage() {
                         </span>
                       </div>
                       <p className="text-sm text-gray-700 leading-relaxed">{src.text}</p>
+                      {src.type === "action_item" && (
+                        <p className="text-xs text-gray-400 mt-1">
+                          {src.owner ? `Owner: ${src.owner}` : "Owner: unassigned"}
+                          {src.due_date ? ` · Due: ${src.due_date}` : ""}
+                          {src.status ? ` · Status: ${src.status}` : ""}
+                        </p>
+                      )}
+                      {src.type === "decision" && src.made_by && (
+                        <p className="text-xs text-gray-400 mt-1">Made by: {src.made_by}</p>
+                      )}
                       {src.meeting_title && (
                         <p className="text-xs text-gray-400 mt-1">{src.meeting_title}</p>
                       )}

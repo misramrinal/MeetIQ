@@ -1,6 +1,6 @@
 # MeetMind — Project Status & Run Guide
 
-_Last verified: 2026-06-24. This document reflects what is **actually working and tested**
+_Last verified: 2026-06-25. This document reflects what is **actually working and tested**
 on the current backend (not the aspirational design in `README.md`)._
 
 ---
@@ -32,11 +32,49 @@ and stores everything for search.
 - **Status / list / detail**: `GET /api/v1/meetings/...`
 - **Transcript**: `GET /api/v1/meetings/{id}/transcript`
 - **Frames (with OCR text)**: `GET /api/v1/meetings/{id}/frames`
-- **RAG text search**: `POST /api/v1/search/?query=...` — hybrid vector + keyword retrieval with an LLM-generated, cited answer
+- **RAG text search**: `POST /api/v1/search/?query=...` — hybrid vector + keyword +
+  structured decision/action retrieval with an LLM-generated, cited answer
 - **Visual search**: `POST /api/v1/search/visual?query=...` — CLIP text-to-image frame search
 - **Decisions / Action items**: `GET /api/v1/decisions/`, `GET /api/v1/actions/`
 - **Recording streaming**: `GET /api/v1/meetings/{id}/recording` (HTTP range support)
 - **Chat import**: `POST /api/v1/meetings/{id}/chat`
+
+### Search behavior (verified)
+
+Text search now returns answer-quality metadata:
+
+```json
+{
+  "query": "what did we decide about the database",
+  "answer": "...",
+  "status": "answered",
+  "confidence": 0.893,
+  "sources": []
+}
+```
+
+`status` is one of:
+
+| Status | Meaning |
+|---|---|
+| `answered` | Retrieval found enough evidence and the LLM generated an answer |
+| `no_evidence` | Retrieval did not find strong enough evidence to answer |
+| `non_search` | The input is conversational / too low-information (for example `hi`) |
+| `llm_error` | Retrieval succeeded, but answer generation failed |
+
+Important verified cases:
+
+- `query=hi` returns `status: "non_search"` with no sources instead of searching random
+  transcript snippets.
+- `query=what decisions were made` returns `decision` sources from the structured
+  decisions table.
+- `query=what action items are assigned` returns `action_item` sources with owners,
+  due dates when available, and item status.
+- `query=what did we decide about the database` returns a normal RAG answer, now mixing
+  structured decision sources with transcript evidence when useful.
+
+Search source types currently include `transcript`, `chat`, `decision`, `action_item`,
+and `frame` (visual search).
 
 ### Frontend
 
@@ -51,6 +89,8 @@ Using `e2e_samples/sample_meeting.wav` (~16.5s) and `e2e_samples/sample_meeting.
   tiny clip; the GPU win shows on longer recordings — see Performance Notes).
 - OCR correctly reads slide text; RAG answers _"We decided to use PostgreSQL as the main
   database…"_; visual search ranks the matching slide first; diarization labels `Speaker 1`.
+- Text search rejects greetings/low-information queries, includes `status` + `confidence`,
+  and can answer directly from extracted decisions/action items.
 
 ---
 
@@ -157,11 +197,39 @@ Invoke-RestMethod "http://localhost:8000/api/v1/meetings/$id/transcript"
 Invoke-RestMethod "http://localhost:8000/api/v1/meetings/$id/frames"
 
 # RAG question answering
-(Invoke-RestMethod "http://localhost:8000/api/v1/search/?query=What did we decide about the database" -Method Post).answer
+$search = Invoke-RestMethod "http://localhost:8000/api/v1/search/?query=What did we decide about the database" -Method Post
+$search.answer
+$search.status
+$search.confidence
+
+# Structured decision/action search
+(Invoke-RestMethod "http://localhost:8000/api/v1/search/?query=what decisions were made" -Method Post).sources
+(Invoke-RestMethod "http://localhost:8000/api/v1/search/?query=what action items are assigned" -Method Post).sources
+
+# Low-information input guard
+Invoke-RestMethod "http://localhost:8000/api/v1/search/?query=hi" -Method Post
 
 # Visual search (CLIP)
 (Invoke-RestMethod "http://localhost:8000/api/v1/search/visual?query=database decision slide" -Method Post).frames
 ```
+
+### Regression tests
+
+```powershell
+$env:PYTHONPATH = "backend"
+.\.venv\Scripts\python.exe -m unittest backend.tests.test_logic_fixes
+.\.venv\Scripts\python.exe -m compileall -q backend\app backend\tests
+
+cd frontend
+.\node_modules\.bin\tsc.cmd --noEmit
+```
+
+Currently covered:
+- greeting / low-information search does not enter RAG
+- weak vector-only evidence does not trigger answer generation
+- vector and SQL duplicates dedupe correctly via `segment_id`
+- structured decisions/action items are returned as search sources
+- HTTP byte range parsing handles normal, suffix, open-ended, and invalid ranges
 
 ### Helper scripts
 
@@ -262,3 +330,11 @@ the bottleneck (~0.7× real-time); on GPU it is ~18× real-time.
   recordings produce `Speaker 1`, `Speaker 2`, etc.
 - **Audio-only files** (`.wav`, `.mp3`, …) skip frame/OCR/CLIP steps automatically.
 - To disable diarization for speed: set `ENABLE_DIARIZATION=false` and restart.
+- **Search ranking is still intentionally simple.** It combines structured rows,
+  Qdrant vector hits, and SQL keyword hits with lightweight scoring/RRF. It now guards
+  against obvious bad inputs and weak evidence, but it is not a full reranker.
+- **Duplicate sample uploads can dominate search results.** The current local database has
+  multiple copies of the sample PostgreSQL meeting, so repeated decision/action sources are
+  expected until the database is cleaned or result diversity is added.
+- **Recording streaming supports single byte ranges.** Normal, suffix, and open-ended ranges
+  work; malformed or unsatisfiable ranges return HTTP 416. Multipart ranges are not implemented.

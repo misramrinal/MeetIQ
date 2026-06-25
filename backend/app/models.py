@@ -26,6 +26,8 @@ class Meeting(Base):
     audio_path = Column(Text, nullable=True)
     status = Column(String(50), default="pending", index=True)
     # status: pending | processing | done | failed
+    processing_stage = Column(String(100), nullable=True)
+    progress_percent = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
     summary = Column(Text, nullable=True)
     # JSON stored as text for SQLite compatibility

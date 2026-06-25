@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from app.config import settings
@@ -47,3 +47,29 @@ def init_db() -> None:
     """Create all tables."""
     from app import models  # noqa: F401
     Base.metadata.create_all(bind=engine)
+    _ensure_lightweight_columns()
+
+
+def _ensure_lightweight_columns() -> None:
+    """Add columns introduced after the MVP tables were first created.
+
+    This keeps the local SQLite-first workflow painless without bringing in
+    Alembic for every small portfolio iteration. Production deployments should
+    still use explicit migrations.
+    """
+    inspector = inspect(engine)
+    if "meetings" not in inspector.get_table_names():
+        return
+    columns = {col["name"] for col in inspector.get_columns("meetings")}
+    additions = []
+    if "processing_stage" not in columns:
+        additions.append("ADD COLUMN processing_stage VARCHAR(100)")
+    if "progress_percent" not in columns:
+        additions.append("ADD COLUMN progress_percent INTEGER DEFAULT 0")
+
+    if not additions:
+        return
+
+    with engine.begin() as conn:
+        for addition in additions:
+            conn.execute(text(f"ALTER TABLE meetings {addition}"))

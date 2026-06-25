@@ -30,6 +30,8 @@ class MeetingOut(ORMModel):
     date: Optional[DateType]
     duration_seconds: Optional[int]
     status: str
+    processing_stage: Optional[str] = None
+    progress_percent: int = 0
     error_message: Optional[str] = None
     summary: Optional[str] = None
     participants: List[Any] = []
@@ -43,6 +45,8 @@ class MeetingOut(ORMModel):
 class MeetingStatusOut(BaseModel):
     meeting_id: str
     status: str
+    processing_stage: Optional[str] = None
+    progress_percent: int = 0
     error_message: Optional[str] = None
 
 
@@ -119,6 +123,7 @@ class SearchRequest(BaseModel):
 
 class SearchSource(BaseModel):
     type: str
+    source_id: Optional[str] = None
     meeting_id: Optional[str] = None
     meeting_title: Optional[str] = None
     speaker: Optional[str] = None
@@ -129,12 +134,18 @@ class SearchSource(BaseModel):
     frame_path: Optional[str] = None
     timestamp: Optional[float] = None
     ocr_text: Optional[str] = None
+    made_by: Optional[str] = None
+    owner: Optional[str] = None
+    due_date: Optional[DateType] = None
+    status: Optional[str] = None
     score: float
 
 
 class SearchResponse(BaseModel):
     query: str
     answer: str
+    status: str
+    confidence: float
     sources: List[SearchSource]
 
 
@@ -148,4 +159,6 @@ class VisualSearchResponse(BaseModel):
 class UploadResponse(BaseModel):
     meeting_id: str
     status: str
+    processing_stage: Optional[str] = None
+    progress_percent: int = 0
     message: str = "Meeting uploaded and queued for processing."

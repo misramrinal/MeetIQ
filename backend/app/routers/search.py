@@ -37,6 +37,8 @@ def text_search(
     return SearchResponse(
         query=result["query"],
         answer=result["answer"],
+        status=result["status"],
+        confidence=result["confidence"],
         sources=sources,
     )
 
