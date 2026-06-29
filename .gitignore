@@ -39,6 +39,7 @@ env/
 # ── OS ──────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # ── Testing ─────────────────────────────────────────────────────────
 .pytest_cache/
@@ -51,6 +52,9 @@ uploads/
 frames/
 audio/
 sessions/
+e2e_samples/
+
+# Media files
 *.wav
 *.mp4
 *.mov
@@ -69,14 +73,25 @@ sessions/
 
 # Qdrant local storage
 storage/
+.qdrant-initialized
 
-# Logs
+# Logs and process output
 *.log
+*.err
 logs/
 
-# Local model caches
+# Temp files from OCR worker
+/tmp/*.json
+
+# Local model weights and caches (downloaded at runtime)
 .cache/
 models/
+
+# PaddleOCR downloaded model cache
+.paddleocr/
+
+# ── Claude / AI assistant files ──────────────────────────────────────
+.claude/
 
 # ── Node / Frontend ─────────────────────────────────────────────────
 node_modules/
