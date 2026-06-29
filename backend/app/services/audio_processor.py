@@ -110,27 +110,32 @@ def transcribe(audio_path: str) -> tuple[list[dict], float]:
     #   - vad_filter skips silence so we don't transcribe dead air (big win on
     #     real meetings with pauses).
     #   - condition_on_previous_text=False avoids slow repetition loops.
-    segments_iter, info = model.transcribe(
-        audio_path,
-        word_timestamps=False,
-        beam_size=1,
-        vad_filter=True,
-        condition_on_previous_text=False,
-    )
-
     segments: list[dict] = []
-    for seg in segments_iter:
-        # avg_logprob is negative; shift by +1 to get a rough 0..1 confidence
-        avg_logprob = getattr(seg, "avg_logprob", -0.5)
-        confidence = max(0.0, min(1.0, avg_logprob + 1.0))
-        segments.append({
-            "text": seg.text.strip(),
-            "start": float(seg.start),
-            "end": float(seg.end),
-            "confidence": confidence,
-        })
+    duration = 0.0
+    try:
+        segments_iter, info = model.transcribe(
+            audio_path,
+            word_timestamps=False,
+            beam_size=1,
+            vad_filter=True,
+            condition_on_previous_text=False,
+        )
+        for seg in segments_iter:
+            avg_logprob = getattr(seg, "avg_logprob", -0.5)
+            confidence = max(0.0, min(1.0, avg_logprob + 1.0))
+            segments.append({
+                "text": seg.text.strip(),
+                "start": float(seg.start),
+                "end": float(seg.end),
+                "confidence": confidence,
+            })
+        duration = float(getattr(info, "duration", 0.0) or (segments[-1]["end"] if segments else 0.0))
+    except ValueError as e:
+        # faster-whisper raises "max() arg is an empty sequence" when VAD removes
+        # the entire audio track (pure silence / no speech). Return empty segments
+        # so video files can still have their frames OCR'd.
+        logger.warning("Whisper found no speech (%s); continuing with empty transcript.", e)
 
-    duration = float(getattr(info, "duration", 0.0) or (segments[-1]["end"] if segments else 0.0))
     logger.info("Transcription done: %d segments, %.1fs of audio", len(segments), duration)
     return segments, duration
 

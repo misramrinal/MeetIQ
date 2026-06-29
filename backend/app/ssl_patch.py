@@ -81,30 +81,43 @@ def apply() -> None:
 
     # ── 5. huggingface_hub — replace the client factory ───────────────────
     _patch_hf_hub()
+    # Also disable symlinks (Windows non-admin can't create them)
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
     logger.info("SSL verification disabled (corporate network mode).")
 
 
 def _patch_hf_hub() -> None:
     """
-    huggingface_hub 1.x exposes set_client_factory().
-    We inject a factory that creates an httpx.Client with verify=False.
+    Patch huggingface_hub HTTP backend to disable SSL verification.
+    Supports both 0.x (configure_http_backend) and 1.x (set_client_factory) APIs.
     """
     try:
-        import httpx
+        import requests as _requests
         import huggingface_hub.utils._http as _hf_http
 
-        def _no_ssl_factory() -> httpx.Client:
-            return httpx.Client(
-                event_hooks={"request": [_hf_http.hf_request_event_hook]},
-                follow_redirects=True,
-                verify=False,
-                timeout=120,
-            )
+        # Try configure_http_backend (huggingface_hub 0.20+)
+        if hasattr(_hf_http, "configure_http_backend"):
+            def _no_ssl_backend() -> _requests.Session:
+                s = _requests.Session()
+                s.verify = False
+                return s
+            _hf_http.configure_http_backend(_no_ssl_backend)
+            # Reset cached sessions
+            if hasattr(_hf_http, "reset_sessions"):
+                _hf_http.reset_sessions()
+            logger.info("huggingface_hub configure_http_backend patched (verify=False).")
+        # Try set_client_factory (huggingface_hub 1.x)
+        elif hasattr(_hf_http, "set_client_factory"):
+            import httpx
 
-        _hf_http.set_client_factory(_no_ssl_factory)
-        # Reset existing client so it is rebuilt with new factory on next use
-        _hf_http._GLOBAL_CLIENT = None
-        logger.info("huggingface_hub client factory replaced (verify=False).")
+            def _no_ssl_factory():
+                return httpx.Client(follow_redirects=True, verify=False, timeout=120)
+
+            _hf_http.set_client_factory(_no_ssl_factory)
+            _hf_http._GLOBAL_CLIENT = None
+            logger.info("huggingface_hub set_client_factory patched (verify=False).")
+        else:
+            logger.warning("huggingface_hub: no known factory patch API found.")
     except Exception as e:
         logger.warning("huggingface_hub factory patch failed: %s", e)

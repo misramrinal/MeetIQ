@@ -1,6 +1,18 @@
 """FastAPI application entry point for MeetMind."""
 from __future__ import annotations
 
+# Load .env into os.environ FIRST so ssl_patch.apply() can read it.
+from pathlib import Path as _Path
+from dotenv import load_dotenv as _load_dotenv
+for _p in (
+    _Path(__file__).resolve().parent.parent.parent / ".env",
+    _Path(__file__).resolve().parent.parent / ".env",
+    _Path(".env"),
+):
+    if _p.exists():
+        _load_dotenv(_p, override=False)
+        break
+
 # Apply SSL bypass FIRST — before any HuggingFace/requests/httpx imports.
 # Required on corporate networks with self-signed certificates.
 from app import ssl_patch
