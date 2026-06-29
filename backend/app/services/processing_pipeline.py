@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -38,6 +39,13 @@ from app.services import (
 from app.services.knowledge_extractor import coerce_text
 
 logger = logging.getLogger(__name__)
+
+# A4 fix: cap the number of meetings that can run the ML-heavy pipeline
+# simultaneously.  Without this, uploading 20 files at once starts 20 threads
+# each trying to load Whisper + pyannote + CLIP, which causes OOM on typical
+# hardware.  Jobs beyond the cap queue and start as a slot frees up.
+_MAX_CONCURRENT_JOBS = 2
+_pipeline_semaphore = threading.Semaphore(_MAX_CONCURRENT_JOBS)
 
 
 class ProcessingTimeout(RuntimeError):
@@ -72,7 +80,17 @@ def process_meeting(meeting_id: str) -> None:
     """
     Background task entry point. Loads its own DB session.
     Updates Meeting.status as it progresses.
+
+    At most _MAX_CONCURRENT_JOBS pipelines run simultaneously; additional calls
+    block in the semaphore until a slot is available, so uploads always queue
+    cleanly instead of exhausting RAM by loading all ML models in parallel.
     """
+    with _pipeline_semaphore:
+        _run_process_meeting(meeting_id)
+
+
+def _run_process_meeting(meeting_id: str) -> None:
+    """Inner implementation — called only once the pipeline semaphore is held."""
     db: Session = SessionLocal()
     try:
         meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
@@ -147,9 +165,20 @@ def _run_pipeline(meeting: Meeting, db: Session, deadline: float = 0.0) -> None:
         _set_progress(meeting, db, "transcribed", 35)
 
     if not raw_segments:
-        raise RuntimeError("No transcript segments produced from the uploaded recording.")
+        ext = os.path.splitext(meeting.recording_path)[1].lower()
+        is_audio_only = ext in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+        if is_audio_only:
+            raise RuntimeError("No transcript segments produced from the uploaded recording.")
+        # Video file with no speech — OCR may still produce useful content.
+        # Continue the pipeline so frames get extracted and indexed.
+        logger.warning(
+            "[%s] No speech detected in audio track; "
+            "frame extraction and OCR will still run.",
+            meeting_id_str,
+        )
+        _append_warning(meeting, db, "No speech detected — transcript is empty. Frames and OCR were still processed.")
 
-    _check_deadline(deadline, "knowledge extraction & indexing")
+    _check_deadline(deadline, "speaker alignment")
 
     # ── Step 4: Align transcript with speakers ───────────────────────────
     _set_progress(meeting, db, "aligning_speakers", 42)
@@ -192,6 +221,8 @@ def _run_pipeline(meeting: Meeting, db: Session, deadline: float = 0.0) -> None:
         for row in segment_rows
     ]
 
+    _check_deadline(deadline, "knowledge extraction & indexing")
+
     # ── Steps 6 + 10 run concurrently with frame processing ──────────────
     #   Step 6:  embed transcripts + index in Qdrant   (background thread)
     #   Step 10: extract knowledge via the LLM         (background thread)
@@ -207,7 +238,10 @@ def _run_pipeline(meeting: Meeting, db: Session, deadline: float = 0.0) -> None:
         # ── Steps 7-9: Frames + OCR + CLIP (main thread, uses DB) ────────
         if settings.enable_frame_extraction:
             _set_progress(meeting, db, "processing_video_frames", 68)
-            _process_video_frames(meeting, db)
+            # Check deadline before starting what can be the longest single
+            # stage on large videos (OCR ~1s/frame on CPU).
+            _check_deadline(deadline, "video frame processing")
+            _process_video_frames(meeting, db, deadline)
 
         # Surface indexing errors (logged inside), then collect knowledge.
         index_future.result()
@@ -267,7 +301,58 @@ def _index_transcripts_in_qdrant(
         logger.error("[%s] Qdrant upsert (transcripts) failed: %s", meeting_id, e)
 
 
-def _process_video_frames(meeting: Meeting, db: Session) -> None:
+def _index_ocr_text_in_qdrant(
+    meeting_id: str,
+    meeting_title: str,
+    frame_rows: list[VideoFrame],
+) -> None:
+    """Embed OCR text from frames and index into the transcript_segments collection.
+
+    This makes slide/screen text searchable via the same RAG pipeline as spoken
+    transcript segments. Frames with no OCR text are skipped silently.
+    """
+    rows_with_text = [r for r in frame_rows if (r.ocr_text or "").strip()]
+    if not rows_with_text:
+        return
+
+    texts = [r.ocr_text for r in rows_with_text]
+    try:
+        vectors = embedder.embed_texts(texts)
+    except Exception as e:
+        logger.error("[%s] OCR text embedding failed: %s", meeting_id, e)
+        return
+
+    if not any(vectors):
+        return
+
+    points = []
+    for row, vec in zip(rows_with_text, vectors):
+        if not vec:
+            continue
+        points.append({
+            "id": str(uuid.uuid4()),
+            "vector": vec,
+            "payload": {
+                "meeting_id": meeting_id,
+                "meeting_title": meeting_title,
+                "segment_id": str(row.id),
+                "speaker": "Screen",
+                "start_time": row.timestamp,
+                "end_time": row.timestamp,
+                "text": row.ocr_text,
+                "source_type": "frame",
+            },
+        })
+
+    try:
+        qdrant_service.upsert_transcript_segments(points)
+        logger.info("[%s] Indexed OCR text from %d frame(s) into transcript collection.",
+                    meeting_id, len(points))
+    except Exception as e:
+        logger.error("[%s] Qdrant upsert (OCR text) failed: %s", meeting_id, e)
+
+
+def _process_video_frames(meeting: Meeting, db: Session, deadline: float = 0.0) -> None:
     """Extract frames, run OCR, generate CLIP embeddings, persist to DB + Qdrant."""
     meeting_id_str = str(meeting.id)
     frames_dir = os.path.join(settings.frames_dir, meeting_id_str)
@@ -275,7 +360,12 @@ def _process_video_frames(meeting: Meeting, db: Session) -> None:
     try:
         frames = frame_extractor.extract_frames(meeting.recording_path, frames_dir)
     except Exception as e:
-        logger.warning("[%s] Frame extraction failed: %s", meeting_id_str, e)
+        # P4 fix: surface the failure visibly on the meeting record instead of
+        # silently marking it done.  We store a warning (not a hard failure) so
+        # the rest of the pipeline (transcript, knowledge) is still usable.
+        msg = f"Frame extraction failed: {e}"
+        logger.warning("[%s] %s", meeting_id_str, msg)
+        _append_warning(meeting, db, msg)
         return
 
     if not frames:
@@ -288,11 +378,18 @@ def _process_video_frames(meeting: Meeting, db: Session) -> None:
     frame_paths = [f["path"] for f in frames]
 
     # OCR every frame in ONE isolated subprocess call (paddle inits once).
-    try:
-        ocr_map = ocr_service.extract_text_batch(frame_paths)
-    except Exception as e:
-        logger.warning("Batch OCR failed: %s", e)
-        ocr_map = {}
+    # Check deadline first — OCR is the dominant per-frame cost on CPU (~1s/frame).
+    if deadline and time.monotonic() > deadline:
+        msg = "Video frame OCR skipped: processing deadline reached."
+        logger.warning("[%s] %s", meeting_id_str, msg)
+        _append_warning(meeting, db, msg)
+        ocr_map: dict[str, str] = {}
+    else:
+        try:
+            ocr_map = ocr_service.extract_text_batch(frame_paths)
+        except Exception as e:
+            logger.warning("Batch OCR failed: %s", e)
+            ocr_map = {}
 
     # CLIP-embed all frames in batches (one forward pass per batch instead of
     # one per frame). Order matches ``frames``.
@@ -340,6 +437,10 @@ def _process_video_frames(meeting: Meeting, db: Session) -> None:
         qdrant_service.upsert_frames(qdrant_points)
     except Exception as e:
         logger.error("[%s] Qdrant upsert (frames) failed: %s", meeting_id_str, e)
+
+    # Index OCR text into the transcript collection so text-search queries can
+    # surface slide content alongside spoken segments.
+    _index_ocr_text_in_qdrant(meeting_id_str, meeting.title, frame_rows)
 
 
 def _persist_knowledge(meeting: Meeting, extracted: dict, db: Session) -> None:
@@ -457,3 +558,12 @@ def _parse_date(value) -> date | None:
         except ValueError:
             continue
     return None
+
+
+def _append_warning(meeting: Meeting, db: Session, message: str) -> None:
+    """Append a non-fatal warning to meeting.error_message without overwriting
+    existing content.  Used by P4 fix to surface frame/OCR failures visibly."""
+    existing = (meeting.error_message or "").strip()
+    separator = "\n" if existing else ""
+    meeting.error_message = (existing + separator + f"[warning] {message}")[:1000]
+    db.commit()

@@ -130,7 +130,10 @@ def _extract_frames_opencv(
             if not ret:
                 break
             timestamp = frame_idx / fps
-            path = os.path.join(output_dir, f"frame_{int(timestamp):06d}.jpg")
+            # Use millisecond precision in the filename to avoid collisions between
+            # frames whose integer-second values are identical (e.g. t=132.0 and
+            # t=132.5 would both produce frame_000132.jpg with int() truncation).
+            path = os.path.join(output_dir, f"frame_{round(timestamp * 1000):09d}ms.jpg")
             cv2.imwrite(path, frame)
             frames.append({"timestamp": timestamp, "path": path})
         frame_idx += 1

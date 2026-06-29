@@ -26,7 +26,11 @@ _WORKER = Path(__file__).resolve().parents[2] / "scripts" / "ocr_worker.py"
 _BASE_TIMEOUT_S = 120
 _PER_IMAGE_TIMEOUT_S = 5
 
-_ocr_disabled = False
+# Disable OCR only after this many consecutive timeouts, not on the first one.
+# A single slow meeting (many frames, slow CPU) should not kill OCR for the
+# entire process lifetime.  A success resets the counter.
+_MAX_CONSECUTIVE_TIMEOUTS = 3
+_consecutive_timeouts = 0
 
 
 def warmup() -> None:
@@ -39,10 +43,21 @@ def extract_text_batch(image_paths: list[str]) -> dict[str, str]:
 
     Returns a mapping of image_path -> extracted text. On any failure, returns
     empty strings for all paths (OCR degrades gracefully).
+
+    After _MAX_CONSECUTIVE_TIMEOUTS consecutive timeouts the subprocess is
+    considered unreliable and OCR is skipped until a successful run resets the
+    counter.  This avoids permanently disabling OCR process-wide after a single
+    slow meeting (the original bug).
     """
-    global _ocr_disabled
+    global _consecutive_timeouts
     empty = {p: "" for p in image_paths}
-    if not settings.enable_ocr or _ocr_disabled or not image_paths:
+    if not settings.enable_ocr or not image_paths:
+        return empty
+    if _consecutive_timeouts >= _MAX_CONSECUTIVE_TIMEOUTS:
+        logger.warning(
+            "OCR skipped: %d consecutive timeouts. Will retry on next meeting.",
+            _consecutive_timeouts,
+        )
         return empty
     if not _WORKER.exists():
         logger.warning("OCR worker not found at %s; skipping OCR.", _WORKER)
@@ -70,14 +85,29 @@ def extract_text_batch(image_paths: list[str]) -> dict[str, str]:
         for line in proc.stdout.splitlines():
             if line.startswith("OCR_RESULT_JSON:"):
                 data = json.loads(line[len("OCR_RESULT_JSON:"):])
-                return {p: data.get(p, "") for p in image_paths}
+                # The worker normalises keys to forward slashes; do the same on
+                # the lookup side so backslash paths from os.path.join still hit.
+                _consecutive_timeouts = 0
+                return {p: data.get(p.replace("\\", "/"), "") for p in image_paths}
 
         logger.warning("OCR subprocess produced no result line.")
         return empty
 
     except subprocess.TimeoutExpired:
-        logger.warning("OCR subprocess timed out; disabling OCR for this run.")
-        _ocr_disabled = True
+        _consecutive_timeouts += 1
+        remaining = _MAX_CONSECUTIVE_TIMEOUTS - _consecutive_timeouts
+        if remaining > 0:
+            logger.warning(
+                "OCR subprocess timed out (%d/%d consecutive). "
+                "%d more before OCR is suspended for this session.",
+                _consecutive_timeouts, _MAX_CONSECUTIVE_TIMEOUTS, remaining,
+            )
+        else:
+            logger.warning(
+                "OCR subprocess timed out %d times consecutively; "
+                "suspending OCR until a successful run resets the counter.",
+                _consecutive_timeouts,
+            )
         return empty
     except Exception as e:
         logger.warning("OCR subprocess failed: %s", e)
