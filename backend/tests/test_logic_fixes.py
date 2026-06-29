@@ -105,7 +105,99 @@ class SearchLogicTests(unittest.TestCase):
             db.close()
 
 
-class RangeHeaderTests(unittest.TestCase):
+    def test_single_term_intent_query_returns_no_evidence(self):
+        """R4 fix: bare intent word ("action") with <2 terms must not produce evidence."""
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine)
+        db = Session()
+        try:
+            meeting = Meeting(
+                id="m-r4", title="Sprint Planning", recording_path="r.mp4", status="done"
+            )
+            db.add(meeting)
+            db.add(ActionItem(
+                id="a-r4", meeting_id="m-r4",
+                text="Update the deployment scripts", owner="Alice",
+                timestamp=5.0, status="open",
+            ))
+            db.commit()
+
+            with patch.object(rag_service, "hybrid_search_transcripts", return_value=[]), \
+                 patch.object(rag_service, "chat") as chat:
+                result = rag_service.search_and_answer("action", db=db)
+
+            chat.assert_not_called()
+            self.assertIn(result["status"], {
+                rag_service.STATUS_NO_EVIDENCE,
+                rag_service.STATUS_NON_SEARCH,
+            })
+        finally:
+            db.close()
+
+    def test_partial_keyword_match_scores_low_and_fails_gate(self):
+        """R2 fix: a vector-only result scoring 0.17 must not pass the evidence gate
+        when the text contains none of the query terms (no direct term evidence)."""
+        # Query has 5 meaningful terms; result text contains none of them.
+        # score = 0.85 * (1/5) = 0.17 — below 0.72 threshold.
+        # retrieval="vector" so has_keyword_hit=False, has_direct_terms=False → gate rejects.
+        weak_vector_hit = [{
+            "segment_id": "seg-partial",
+            "meeting_id": "m-2",
+            "meeting_title": "Design Review",
+            "speaker": "Bob",
+            "text": "Okay, let us move on to the next topic.",
+            "start_time": 3.0,
+            "end_time": 4.0,
+            "score": round(0.85 * (1 / 5), 4),  # 0.17 — simulates 1-of-5 coverage
+            "retrieval": "vector",
+        }]
+        with patch.object(rag_service, "structured_search", return_value=[]), \
+             patch.object(rag_service, "hybrid_search_transcripts", return_value=weak_vector_hit), \
+             patch.object(rag_service, "chat") as chat:
+            result = rag_service.search_and_answer(
+                "architecture scalability performance latency caching", db=Mock()
+            )
+
+        chat.assert_not_called()
+        self.assertEqual(result["status"], rag_service.STATUS_NO_EVIDENCE)
+
+    def test_full_coverage_keyword_match_passes_gate(self):
+        """R2 fix: a 5-of-5-term keyword hit must still pass the evidence gate."""
+        full_hit = [{
+            "segment_id": "seg-full",
+            "meeting_id": "m-3",
+            "meeting_title": "Architecture Review",
+            "speaker": "Carol",
+            "text": "We chose PostgreSQL for the database schema migration plan.",
+            "start_time": 10.0,
+            "end_time": 12.0,
+            "score": 0.85,  # full coverage → min(0.85, 0.85 * 1.0)
+            "retrieval": "keyword",
+        }]
+        with patch.object(rag_service, "structured_search", return_value=[]), \
+             patch.object(rag_service, "hybrid_search_transcripts", return_value=full_hit), \
+             patch.object(rag_service, "chat", return_value="PostgreSQL was chosen. [1]"):
+            result = rag_service.search_and_answer(
+                "PostgreSQL database schema migration plan", db=Mock()
+            )
+
+        self.assertEqual(result["status"], rag_service.STATUS_ANSWERED)
+        self.assertGreater(result["confidence"], 0.0)
+
+    def test_rrf_dedup_handles_structured_id_prefix(self):
+        """R3 fix: 'decision:<uuid>' and source_id='<uuid>' are the same record — one result."""
+        uuid = "aaaaaaaa-0000-0000-0000-000000000001"
+        list_a = [{"id": f"decision:{uuid}", "text": "Use PostgreSQL", "score": 0.9,
+                   "type": "decision", "retrieval": "structured"}]
+        list_b = [{"source_id": uuid, "id": f"decision:{uuid}",
+                   "text": "Use PostgreSQL", "score": 0.85,
+                   "type": "decision", "retrieval": "structured"}]
+
+        fused = rag_service.reciprocal_rank_fusion([list_a, list_b])
+
+        self.assertEqual(len(fused), 1, "Same decision must appear only once after RRF dedup")
+        self.assertEqual(fused[0]["score"], 0.9, "Highest original score should be kept")
     def test_standard_range(self):
         self.assertEqual(_parse_range_header("bytes=10-19", 100), (10, 19))
 

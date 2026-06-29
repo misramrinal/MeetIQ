@@ -141,12 +141,27 @@ def _result_confidence(segments: list[dict]) -> float:
     return round(min(1.0, best + structured_bonus), 3)
 
 
+def _item_key(item: dict) -> str:
+    """Stable dedup key covering all result ID shapes.
+
+    Structured results carry a prefixed id like ``"decision:<uuid>"``; transcript
+    results may have either ``id`` or ``segment_id``.  The key must be identical
+    for the same logical record regardless of which field is populated.
+    """
+    raw_id = item.get("id") or item.get("segment_id") or item.get("source_id") or ""
+    if raw_id:
+        return str(raw_id)
+    # Last-resort fallback: use canonical full text so genuinely ID-less items
+    # from different result lists can still deduplicate.
+    return _canonical_text(item.get("text") or "")[:200]
+
+
 # ── Reciprocal Rank Fusion ───────────────────────────────────────────────
 
 def reciprocal_rank_fusion(
     ranked_lists: list[list[dict]],
     k: int = 60,
-    key_fn=lambda r: r.get("id") or r.get("segment_id") or r.get("text", "")[:120],
+    key_fn=_item_key,
 ) -> list[dict]:
     """
     Combine multiple ranked result lists using RRF.
@@ -229,11 +244,16 @@ def rerank_and_diversify(
 
     for item in scored:
         item_id = item.get("id") or item.get("segment_id") or item.get("source_id")
+        text_key = _canonical_text(item.get("text") or "")[:180]
         if item_id and item_id in seen_ids:
+            continue
+        if not item_id and text_key and text_key in seen_ids:
             continue
         selected.append(item)
         if item_id:
             seen_ids.add(item_id)
+        elif text_key:
+            seen_ids.add(text_key)
         if len(selected) >= top_k:
             break
     return selected
@@ -297,7 +317,11 @@ def hybrid_search_transcripts(
                 "start_time": row[0].start_time,
                 "end_time": row[0].end_time,
                 "text": text,
-                "score": min(0.95, 0.55 + (0.35 * coverage)),
+                # Score is proportional to term coverage only.  No fixed floor so
+                # partial matches (1-of-5 terms) earn ~0.17 while full coverage
+                # earns 0.85 — leaving room for strong semantic hits (~0.88–0.92)
+                # to outrank single-term keyword hits.
+                "score": round(min(0.85, 0.85 * coverage), 4),
                 "retrieval": "keyword",
             })
         kw_results.sort(key=lambda r: r["score"], reverse=True)
@@ -328,7 +352,10 @@ def structured_search(
         haystack = f"{text or ''} {extra or ''}"
         hits = _term_hit_count(query_terms, haystack)
         if intent_match and hits <= 0:
-            return 0.72
+            # A single bare intent word ("action", "task") with no matching content
+            # is too vague to assert evidence.  Require at least 2 query terms
+            # before awarding the intent-boost score.
+            return 0.0 if len(query_terms) < 2 else 0.72
         if hits <= 0:
             return 0.0
         coverage = hits / max(len(query_terms), 1)
