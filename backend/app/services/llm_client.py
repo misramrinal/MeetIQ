@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import time
 from typing import Any
@@ -22,7 +23,11 @@ class LLMError(RuntimeError):
 
 
 def _retry(call_fn, max_retries: int, label: str) -> Any:
-    """Call call_fn(), retrying on transient network errors and HTTP 5xx."""
+    """Call call_fn(), retrying on transient network errors and HTTP 5xx.
+
+    Backoff uses base ** (attempt-1) plus ±30 % random jitter so concurrent
+    meeting-processing jobs don't all retry at exactly the same instant.
+    """
     last_exc: Exception | None = None
     for attempt in range(1, max_retries + 1):
         try:
@@ -32,21 +37,25 @@ def _retry(call_fn, max_retries: int, label: str) -> Any:
             if attempt == max_retries:
                 logger.error("[%s] %s after %d attempt(s)", label, type(e).__name__, attempt)
                 raise LLMError(f"{label} failed: {e}") from e
-            wait = RETRY_BACKOFF_BASE ** (attempt - 1)
-            logger.warning("[%s] Retry %d/%d in %ds (%s)",
+            base_wait = RETRY_BACKOFF_BASE ** (attempt - 1)
+            wait = base_wait * (0.7 + 0.6 * random.random())  # ±30 % jitter
+            logger.warning("[%s] Retry %d/%d in %.1fs (%s)",
                            label, attempt, max_retries, wait, type(e).__name__)
             time.sleep(wait)
         except requests.HTTPError as e:
-            status = e.response.status_code if e.response is not None else 0
-            body = e.response.text[:300] if e.response is not None else ""
-            if status < 500:
-                raise LLMError(f"{label} HTTP {status}: {body}") from e
+            # L2 fix: guard against e.response being None before accessing attributes
+            resp = e.response
+            status_code = resp.status_code if resp is not None else 0
+            body = resp.text[:300] if resp is not None else ""
+            if status_code and status_code < 500:
+                raise LLMError(f"{label} HTTP {status_code}: {body}") from e
             last_exc = e
             if attempt == max_retries:
-                raise LLMError(f"{label} HTTP {status} after {attempt} attempt(s): {body}") from e
-            wait = RETRY_BACKOFF_BASE ** (attempt - 1)
-            logger.warning("[%s] HTTP %d, retry %d/%d in %ds",
-                           label, status, attempt, max_retries, wait)
+                raise LLMError(f"{label} HTTP {status_code} after {attempt} attempt(s): {body}") from e
+            base_wait = RETRY_BACKOFF_BASE ** (attempt - 1)
+            wait = base_wait * (0.7 + 0.6 * random.random())
+            logger.warning("[%s] HTTP %d, retry %d/%d in %.1fs",
+                           label, status_code, attempt, max_retries, wait)
             time.sleep(wait)
     if last_exc:
         raise LLMError(f"{label} exhausted retries") from last_exc

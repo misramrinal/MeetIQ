@@ -35,6 +35,9 @@ def coerce_text(value, *, keys: tuple[str, ...] = _TEXT_KEYS) -> str:
 
 # Maximum transcript size sent to the LLM in one call.# For long meetings, we split into chunks.
 MAX_CHUNK_CHARS = 12000
+# Characters of overlap between consecutive chunks so decisions that straddle
+# a boundary aren't invisible to both LLM calls.
+CHUNK_OVERLAP_CHARS = 300
 
 SYSTEM_PROMPT = """You are an expert meeting analyst. \
 Your job is to extract structured information from meeting transcripts.
@@ -99,8 +102,13 @@ def _format_transcript(segments: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _chunk_transcript(transcript: str, max_chars: int) -> list[str]:
-    """Split a long transcript into roughly equal chunks at line boundaries."""
+def _chunk_transcript(transcript: str, max_chars: int, overlap: int = CHUNK_OVERLAP_CHARS) -> list[str]:
+    """Split a long transcript into chunks at line boundaries with overlap.
+
+    The last ``overlap`` characters of each chunk are repeated at the start of
+    the next one so decisions / action items that straddle a boundary are visible
+    to both LLM calls and not silently dropped.
+    """
     if len(transcript) <= max_chars:
         return [transcript]
     lines = transcript.split("\n")
@@ -110,9 +118,12 @@ def _chunk_transcript(transcript: str, max_chars: int) -> list[str]:
     for line in lines:
         line_len = len(line) + 1
         if current_len + line_len > max_chars and current:
-            chunks.append("\n".join(current))
-            current = []
-            current_len = 0
+            chunk_text = "\n".join(current)
+            chunks.append(chunk_text)
+            # Carry the tail of the current chunk into the next one
+            tail = chunk_text[-overlap:] if overlap else ""
+            current = [tail] if tail else []
+            current_len = len(tail) + 1 if tail else 0
         current.append(line)
         current_len += line_len
     if current:
@@ -169,22 +180,69 @@ def _merge_results(results: list[dict]) -> dict:
                 continue
             if not name or etype not in {"PERSON", "ORG", "PRODUCT", "TECHNOLOGY"}:
                 continue
-            key = (name.lower(), etype)
+            # K3 fix: normalise to title-case so "JOHN DOE" and "john doe" merge
+            # into a single entry with a consistent display name.
+            name_normalised = name.strip().title()
+            key = (name_normalised.lower(), etype)
             if key not in entity_map:
-                entity_map[key] = {"name": name, "type": etype, "mentions": 0}
-            mentions = ent.get("mentions") if isinstance(ent, dict) else 1
-            entity_map[key]["mentions"] += int(mentions or 1)
+                entity_map[key] = {"name": name_normalised, "type": etype, "mentions": 0}
+            # Issue-4 fix: LLM sometimes returns mentions as a string ("two").
+            # Coerce safely with a fallback to 1 rather than crashing on int().
+            raw_mentions = ent.get("mentions") if isinstance(ent, dict) else 1
+            try:
+                entity_map[key]["mentions"] += int(raw_mentions or 1)
+            except (TypeError, ValueError):
+                entity_map[key]["mentions"] += 1
 
         s = coerce_text(r.get("summary"), keys=("summary", "text", "value"))
         if s:
             summaries.append(s)
 
-    merged["summary"] = " ".join(summaries).strip()
+    # K2 fix: instead of naively joining per-chunk summaries (which produces
+    # a multi-paragraph blob with repeated facts), consolidate via a second
+    # LLM call when there are multiple chunks.  Single-chunk meetings skip it.
+    if len(summaries) == 0:
+        merged["summary"] = ""
+    elif len(summaries) == 1:
+        merged["summary"] = summaries[0]
+    else:
+        merged["summary"] = _consolidate_summaries(summaries)
     merged["entities"] = [
         ent
         for ent in sorted(entity_map.values(), key=lambda x: -x["mentions"])
     ][:20]
     return merged
+
+
+def _consolidate_summaries(summaries: list[str]) -> str:
+    """Merge per-chunk summaries into a single cohesive summary via one LLM call.
+
+    Falls back to joining the summaries with a separator if the LLM call fails,
+    which is still better than the old verbatim concatenation.
+    """
+    joined = "\n\n".join(f"Chunk {i+1}: {s}" for i, s in enumerate(summaries))
+    messages = [
+        {"role": "system", "content":
+            "You are a meeting summarisation assistant. You will receive several "
+            "partial summaries of consecutive segments of the same meeting. "
+            "Write a single, concise, non-repetitive 2-4 sentence executive summary "
+            "covering the whole meeting. Return only the summary text, no preamble."},
+        {"role": "user", "content": joined},
+    ]
+    try:
+        from app.services.llm_client import chat
+        return chat(messages, temperature=0.1, max_tokens=300).strip()
+    except Exception as e:
+        logger.warning("Summary consolidation LLM call failed (%s); using joined fallback.", e)
+        # Deduplicated join as a graceful fallback
+        seen: set[str] = set()
+        parts: list[str] = []
+        for s in summaries:
+            key = s.lower()[:60]
+            if key not in seen:
+                seen.add(key)
+                parts.append(s)
+        return " ".join(parts)
 
 
 def extract_knowledge(segments: list[dict]) -> dict:

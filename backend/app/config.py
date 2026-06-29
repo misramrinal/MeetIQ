@@ -127,7 +127,7 @@ def resolve_device(preference: str) -> str:
 
 def resolve_whisper_compute_type(device: str) -> str:
     """Pick a sensible CTranslate2 compute type for the resolved device."""
-    pref = (settings.whisper_compute_type or "auto").strip().lower()
+    pref = (get_settings().whisper_compute_type or "auto").strip().lower()
     if pref != "auto":
         return pref
     # float16 is the fast, well-supported default on GPU; int8 on CPU.

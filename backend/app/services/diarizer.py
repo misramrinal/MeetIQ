@@ -133,23 +133,50 @@ def align_speakers(transcript: list[dict], speakers: list[dict]) -> list[dict]:
         return [{**seg, "speaker": "Speaker"} for seg in transcript]
 
     aligned: list[dict] = []
+    unlabelled_count = 0
+
     for seg in transcript:
         seg_start = seg["start"]
         seg_end = seg["end"]
         seg_mid = (seg_start + seg_end) / 2
 
-        # Find the speaker whose segment contains the midpoint
-        best_speaker = "Speaker"
+        best_speaker = None
         best_overlap = 0.0
+        best_mid_dist = float("inf")
+
         for sp in speakers:
-            # Pick the speaker with the most overlap with this segment
             overlap = max(0.0, min(sp["end"], seg_end) - max(sp["start"], seg_start))
             if overlap > best_overlap:
+                # S1 fix: track mid-distance as a tie-breaker so equal-overlap
+                # segments are resolved deterministically by proximity, not by
+                # dict iteration order.
                 best_overlap = overlap
                 best_speaker = sp["speaker"]
+                best_mid_dist = abs(((sp["start"] + sp["end"]) / 2) - seg_mid)
+            elif overlap == best_overlap and overlap > 0.0:
+                # True tie — pick the speaker whose midpoint is closer to the
+                # segment midpoint for deterministic, semantically-sensible output.
+                mid_dist = abs(((sp["start"] + sp["end"]) / 2) - seg_mid)
+                if mid_dist < best_mid_dist:
+                    best_speaker = sp["speaker"]
+                    best_mid_dist = mid_dist
             elif best_overlap == 0.0 and sp["start"] <= seg_mid <= sp["end"]:
+                # No overlap at all — fall back to midpoint containment.
                 best_speaker = sp["speaker"]
 
+        if best_speaker is None:
+            # S2 fix: log a warning when a segment cannot be mapped to any speaker
+            # so transcript quality issues are visible rather than silent.
+            unlabelled_count += 1
+            best_speaker = "Speaker"
+
         aligned.append({**seg, "speaker": best_speaker})
+
+    if unlabelled_count:
+        logger.warning(
+            "align_speakers: %d segment(s) could not be matched to any speaker "
+            "and were labelled 'Speaker'. Check diarization coverage.",
+            unlabelled_count,
+        )
 
     return aligned

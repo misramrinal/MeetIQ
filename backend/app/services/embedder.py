@@ -112,16 +112,29 @@ def embed_text(text: str) -> list[float]:
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed a batch of text strings."""
+    """Embed a batch of text strings.
+
+    Always returns a list of the same length as ``texts``.  Failed batches
+    return empty vectors for each item in that batch rather than truncating the
+    result list (which would cause silent silent dropped indexing via zip()).
+    """
     model = _get_text_model()
     if model is None or not texts:
         return [[] for _ in texts]
     try:
-        return model.encode(
+        result = model.encode(
             texts,
             normalize_embeddings=True,
             batch_size=32,
         ).tolist()
+        # Guarantee output length matches input length even on partial encode
+        if len(result) != len(texts):
+            logger.warning(
+                "embed_texts: got %d vectors for %d texts; padding with empty vectors.",
+                len(result), len(texts),
+            )
+            result.extend([] for _ in range(len(texts) - len(result)))
+        return result
     except Exception as e:
         logger.warning("Batch text embedding failed: %s", e)
         return [[] for _ in texts]
@@ -168,10 +181,20 @@ def embed_images(image_paths: list[str], batch_size: int = 16) -> list[list[floa
                 inputs = {k: v.to("cuda") for k, v in inputs.items()}
             with torch.no_grad():
                 features = model.get_image_features(**inputs)
-                features = features / features.norm(dim=-1, keepdim=True)
+                # E1 fix: guard against zero-norm vectors (blank/near-blank frames)
+                # before dividing.  A zero-norm produces NaN which corrupts Qdrant
+                # cosine similarity for ALL subsequent visual searches globally.
+                norms = features.norm(dim=-1, keepdim=True)
+                norms = norms.clamp(min=1e-8)   # replace 0 with tiny value → unit vec
+                features = features / norms
             features = features.cpu()
             for local_i, global_i in enumerate(valid_idx):
-                results[global_i] = features[local_i].tolist()
+                vec = features[local_i].tolist()
+                # Sanity-check: drop any vector that still contains NaN/Inf
+                if any(v != v or abs(v) == float("inf") for v in vec):
+                    logger.warning("Skipping NaN/Inf CLIP vector for image index %d", global_i)
+                else:
+                    results[global_i] = vec
         except Exception as e:
             logger.warning("Batch image embedding failed (%d imgs): %s", len(images), e)
         finally:
@@ -193,7 +216,8 @@ def embed_text_for_image_search(text: str) -> list[float]:
             inputs = {k: v.to("cuda") for k, v in inputs.items()}
         with torch.no_grad():
             features = model.get_text_features(**inputs)
-            features = features / features.norm(dim=-1, keepdim=True)
+            norms = features.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+            features = features / norms
         return features[0].cpu().tolist()
     except Exception as e:
         logger.warning("CLIP text embedding failed: %s", e)
