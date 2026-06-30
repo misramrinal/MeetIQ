@@ -1,4 +1,4 @@
-# MeetMind 🧠
+# MeetIQ 🧠
 ## Multimodal Meeting Intelligence and Organizational Memory Platform
 
 > Transform every meeting into a searchable, queryable knowledge asset using AI-powered multimodal processing, real-time transcription, and long-term organizational memory.
@@ -32,7 +32,7 @@
 
 ## Overview
 
-**MeetMind** is an advanced AI platform that processes live and recorded meetings across audio, video, screen shares, slides, and chat messages. It extracts structured knowledge — decisions, action items, topics, entities — and builds a searchable, queryable organizational memory.
+**MeetIQ** is an advanced AI platform that processes live and recorded meetings across audio, video, screen shares, slides, and chat messages. It extracts structured knowledge — decisions, action items, topics, entities — and builds a searchable, queryable organizational memory.
 
 Users can ask natural language questions across all past meetings and receive answers with video timestamp citations, speaker attribution, and visual evidence.
 
@@ -78,7 +78,7 @@ Organizations lose enormous amounts of knowledge every day because:
 
 ## Solution
 
-MeetMind solves this by:
+MeetIQ solves this by:
 
 1. **Processing** every meeting across all modalities: audio, video, slides, screen shares, and chat.
 2. **Extracting** structured knowledge: decisions, action items, topics, entities, and unresolved questions.
@@ -219,7 +219,7 @@ Found in 3 meetings:
 
 ```
 +------------------------------------------------------------------+
-|                        MeetMind Platform                         |
+|                        MeetIQ Platform                         |
 +------------------+----------------------+------------------------+
 |   Ingestion      |     Processing       |     Retrieval          |
 |                  |                      |                        |
@@ -368,7 +368,7 @@ Response Layer
     { "name": "Bob", "speaker_id": "spk-1" },
     { "name": "Priya", "speaker_id": "spk-2" }
   ],
-  "recording_url": "s3://meetmind/recordings/mtg-001.mp4",
+  "recording_url": "s3://MeetIQ/recordings/mtg-001.mp4",
   "status": "processed",
   "tags": ["product", "planning", "q3"],
   "created_at": "2026-06-20T10:00:00Z",
@@ -429,7 +429,7 @@ Response Layer
   "frame_id": "frm-001",
   "meeting_id": "mtg-001",
   "timestamp": 145.0,
-  "frame_url": "s3://meetmind/frames/mtg-001/145.jpg",
+  "frame_url": "s3://MeetIQ/frames/mtg-001/145.jpg",
   "ocr_text": "Database Architecture Options\n- PostgreSQL\n- MongoDB\n- DynamoDB",
   "scene_type": "slide",
   "image_embedding_id": "img-emb-001"
@@ -451,13 +451,13 @@ Response Layer
       "speaker": "Alice",
       "timestamp": 148.2,
       "text": "I think we should use PostgreSQL for the main database.",
-      "clip_url": "s3://meetmind/clips/mtg-001-142-155.mp4"
+      "clip_url": "s3://MeetIQ/clips/mtg-001-142-155.mp4"
     },
     {
       "type": "frame",
       "meeting_id": "mtg-001",
       "timestamp": 145.0,
-      "frame_url": "s3://meetmind/frames/mtg-001/145.jpg",
+      "frame_url": "s3://MeetIQ/frames/mtg-001/145.jpg",
       "ocr_text": "Database Architecture Options"
     }
   ]
@@ -1009,8 +1009,8 @@ Participants: Alice (Tech Lead), Bob (Backend), Priya (DevOps)
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/meetmind.git
-cd meetmind
+git clone https://github.com/yourusername/MeetIQ.git
+cd MeetIQ
 
 # Copy and configure environment variables
 cp .env.example .env
@@ -1076,8 +1076,8 @@ services:
     image: postgres:16-alpine
     ports: ["5432:5432"]
     environment:
-      POSTGRES_DB: meetmind
-      POSTGRES_USER: meetmind
+      POSTGRES_DB: MeetIQ
+      POSTGRES_USER: MeetIQ
       POSTGRES_PASSWORD: password
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -1097,7 +1097,7 @@ services:
     ports: ["9000:9000", "9001:9001"]
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: meetmind
+      MINIO_ROOT_USER: MeetIQ
       MINIO_ROOT_PASSWORD: password
     volumes:
       - minio_data:/data
@@ -1141,7 +1141,7 @@ volumes:
 ## Project Structure
 
 ```
-meetmind/
+MeetIQ/
 ├── backend/
 │   ├── app/
 │   │   ├── api/
@@ -1249,7 +1249,7 @@ SECRET_KEY=your-secret-key-change-in-production
 ALLOWED_ORIGINS=http://localhost:3000
 
 # ── Database ─────────────────────────────────────────────────────
-DATABASE_URL=postgresql://meetmind:password@postgres:5432/meetmind
+DATABASE_URL=postgresql://MeetIQ:password@postgres:5432/MeetIQ
 
 # ── Redis ────────────────────────────────────────────────────────
 REDIS_URL=redis://redis:6379/0
@@ -1260,9 +1260,9 @@ QDRANT_API_KEY=
 
 # ── Object Storage (MinIO / S3) ───────────────────────────────────
 MINIO_ENDPOINT=minio:9000
-MINIO_ACCESS_KEY=meetmind
+MINIO_ACCESS_KEY=MeetIQ
 MINIO_SECRET_KEY=password
-MINIO_BUCKET=meetmind
+MINIO_BUCKET=MeetIQ
 MINIO_SECURE=false
 
 # ── LLM Provider ─────────────────────────────────────────────────
@@ -1383,7 +1383,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
 ### Resume Bullet Examples
 
 **Concise version:**
-> Built MeetMind, a multimodal meeting intelligence platform using FastAPI, Whisper, pyannote.audio, CLIP, PaddleOCR, Qdrant, and Next.js that processes meeting recordings to extract speaker-attributed decisions and action items, indexes video frames and transcripts using hybrid vector/keyword retrieval, and enables natural language search across organizational meeting history with video timestamp citations.
+> Built MeetIQ, a multimodal meeting intelligence platform using FastAPI, Whisper, pyannote.audio, CLIP, PaddleOCR, Qdrant, and Next.js that processes meeting recordings to extract speaker-attributed decisions and action items, indexes video frames and transcripts using hybrid vector/keyword retrieval, and enables natural language search across organizational meeting history with video timestamp citations.
 
 **Metrics-focused version:**
 > Developed a multimodal RAG platform that ingests meeting recordings, extracts speaker-attributed transcripts using faster-whisper and pyannote.audio, indexes video frames with CLIP image embeddings and PaddleOCR text extraction, and performs hybrid vector/BM25 retrieval over 50K+ synthetic segments to answer natural language queries with cited video timestamps, achieving >85% answer faithfulness on a RAGAS evaluation benchmark.
@@ -1394,7 +1394,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
 
 MIT License
 
-Copyright (c) 2026 MeetMind
+Copyright (c) 2026 MeetIQ
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
