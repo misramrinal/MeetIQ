@@ -1,4 +1,4 @@
-"""FastAPI application entry point for MeetMind."""
+"""FastAPI application entry point for MeetIQ."""
 from __future__ import annotations
 
 # Load .env into os.environ FIRST so ssl_patch.apply() can read it.
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # ── FastAPI app ──────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="MeetMind API",
+    title="MeetIQ API",
     description="Multimodal Meeting Intelligence Platform",
     version=__version__,
 )
@@ -127,7 +127,7 @@ def health() -> dict:
 @app.get("/")
 def root() -> dict:
     return {
-        "name": "MeetMind API",
+        "name": "MeetIQ API",
         "version": __version__,
         "docs": "/docs",
         "health": "/health",

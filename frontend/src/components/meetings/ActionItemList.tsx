@@ -8,10 +8,10 @@ import { actionsApi } from "@/lib/api";
 import { toast } from "sonner";
 
 const STATUS_STYLES: Record<ActionStatus, string> = {
-  open: "bg-yellow-50 text-yellow-700 border-yellow-200",
-  in_progress: "bg-blue-50 text-blue-700 border-blue-200",
-  done: "bg-green-50 text-green-700 border-green-200",
-  cancelled: "bg-gray-50 text-gray-500 border-gray-200",
+  open: "bg-amber-500/10 text-amber-500 ring-1 ring-amber-500/20",
+  in_progress: "bg-blue-500/10 text-blue-400 ring-1 ring-blue-500/20",
+  done: "bg-emerald-500/10 text-emerald-500 ring-1 ring-emerald-500/20",
+  cancelled: "bg-panel-2 text-subtle ring-1 ring-line",
 };
 
 const STATUS_LABELS: Record<ActionStatus, string> = {
@@ -27,11 +27,7 @@ interface ActionItemListProps {
   onUpdate?: (updated: ActionItem) => void;
 }
 
-export default function ActionItemList({
-  items,
-  onSeek,
-  onUpdate,
-}: ActionItemListProps) {
+export default function ActionItemList({ items, onSeek, onUpdate }: ActionItemListProps) {
   const [updating, setUpdating] = useState<string | null>(null);
 
   const handleStatusChange = async (item: ActionItem, newStatus: ActionStatus) => {
@@ -49,7 +45,7 @@ export default function ActionItemList({
 
   if (items.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+      <div className="flex flex-col items-center justify-center py-16 text-subtle">
         <CheckSquare className="w-8 h-8 mb-2 opacity-40" />
         <p className="text-sm">No action items extracted yet.</p>
       </div>
@@ -57,27 +53,24 @@ export default function ActionItemList({
   }
 
   return (
-    <div className="p-4 space-y-3">
+    <div className="p-4 space-y-3 max-w-3xl mx-auto">
       {items.map((item) => (
         <div
           key={item.id}
-          className={cn(
-            "card p-4 transition-opacity",
-            item.status === "done" && "opacity-60"
-          )}
+          className={cn("card p-4 transition-opacity", item.status === "done" && "opacity-60")}
         >
           <div className="flex items-start gap-3">
             <CheckSquare
               className={cn(
                 "w-4 h-4 flex-shrink-0 mt-0.5",
-                item.status === "done" ? "text-green-500" : "text-gray-400"
+                item.status === "done" ? "text-emerald-500" : "text-subtle"
               )}
             />
             <div className="flex-1 min-w-0">
               <p
                 className={cn(
-                  "text-sm text-gray-800 leading-relaxed",
-                  item.status === "done" && "line-through text-gray-400"
+                  "text-sm text-fg leading-relaxed",
+                  item.status === "done" && "line-through text-subtle"
                 )}
               >
                 {item.text}
@@ -85,13 +78,13 @@ export default function ActionItemList({
 
               <div className="flex flex-wrap items-center gap-3 mt-2">
                 {item.owner && (
-                  <span className="flex items-center gap-1 text-xs text-gray-500">
+                  <span className="flex items-center gap-1 text-xs text-muted">
                     <User className="w-3 h-3" />
                     {item.owner}
                   </span>
                 )}
                 {item.due_date && (
-                  <span className="flex items-center gap-1 text-xs text-gray-500">
+                  <span className="flex items-center gap-1 text-xs text-muted">
                     <Calendar className="w-3 h-3" />
                     {formatDate(item.due_date)}
                   </span>
@@ -99,24 +92,20 @@ export default function ActionItemList({
                 {item.timestamp != null && (
                   <button
                     onClick={() => onSeek?.(item.timestamp!)}
-                    className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700 font-mono"
+                    className="flex items-center gap-1 text-xs text-accent hover:opacity-80 font-mono"
                   >
                     <Clock className="w-3 h-3" />
                     {formatTime(item.timestamp)}
                   </button>
                 )}
 
-                {/* Status selector */}
                 <div className="relative ml-auto">
                   <select
                     value={item.status}
                     disabled={updating === item.id}
-                    onChange={(e) =>
-                      handleStatusChange(item, e.target.value as ActionStatus)
-                    }
+                    onChange={(e) => handleStatusChange(item, e.target.value as ActionStatus)}
                     className={cn(
-                      "text-xs px-2 py-1 rounded-full border font-medium appearance-none pr-6 cursor-pointer",
-                      "focus:outline-none focus:ring-1 focus:ring-blue-400",
+                      "text-xs px-2.5 py-1 rounded-full font-medium appearance-none pr-6 cursor-pointer focus:outline-none",
                       STATUS_STYLES[item.status]
                     )}
                   >

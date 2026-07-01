@@ -16,15 +16,12 @@ import DecisionList from "@/components/meetings/DecisionList";
 import ActionItemList from "@/components/meetings/ActionItemList";
 import MeetingSummary from "@/components/meetings/MeetingSummary";
 import FrameGallery from "@/components/meetings/FrameGallery";
-import { formatDate, formatDuration } from "@/lib/utils";
+import { formatDate, formatDuration, cn } from "@/lib/utils";
 import { toast } from "sonner";
 import type { ActionItem } from "@/lib/types";
 
-// Dynamically import ReactPlayer to avoid SSR issues.
 const ReactPlayer = dynamic(() => import("react-player/lazy"), { ssr: false });
 
-// The backend marks timeouts with a message like
-// "Processing exceeded the 7200s time limit ...".
 function isTimeoutError(message?: string | null): boolean {
   if (!message) return false;
   const m = message.toLowerCase();
@@ -71,7 +68,7 @@ export default function MeetingDetailPage() {
     enabled: meeting?.status === "done",
   });
 
-  const { data: actions = [], refetch: refetchActions } = useQuery({
+  const { data: actions = [] } = useQuery({
     queryKey: ["actions", id],
     queryFn: () => actionsApi.list({ meeting_id: id }),
     enabled: meeting?.status === "done",
@@ -89,8 +86,6 @@ export default function MeetingDetailPage() {
     enabled: meeting?.status === "done",
   });
 
-  // Notify the user when processing finishes or fails (incl. timeouts) while
-  // they're watching the page (status is polled every 3s above).
   useEffect(() => {
     if (!meeting) return;
     const prev = prevStatusRef.current;
@@ -138,14 +133,14 @@ export default function MeetingDetailPage() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
+        <Loader2 className="w-6 h-6 animate-spin text-accent" />
       </div>
     );
   }
 
   if (isError) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-gray-400">
+      <div className="flex flex-col items-center justify-center h-full text-muted">
         <p>Could not load this meeting. Make sure the backend is running.</p>
       </div>
     );
@@ -153,7 +148,7 @@ export default function MeetingDetailPage() {
 
   if (!meeting) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-gray-400">
+      <div className="flex flex-col items-center justify-center h-full text-muted">
         <p>Meeting not found.</p>
       </div>
     );
@@ -162,41 +157,43 @@ export default function MeetingDetailPage() {
   const recordingUrl = meetingsApi.getRecordingUrl(id);
   const isProcessing = meeting.status === "pending" || meeting.status === "processing";
 
+  const tabCount: Record<string, number> = {
+    transcript: chatMessages.length,
+    decisions: decisions.length,
+    actions: actions.filter((a) => a.status === "open").length,
+  };
+
   return (
     <div className="flex flex-col h-full">
       {/* Top bar */}
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
+      <div className="flex items-center gap-3 px-5 md:px-6 h-16 border-b border-line bg-panel/70 backdrop-blur-xl">
         <button
           onClick={() => router.back()}
-          className="text-gray-400 hover:text-gray-600 transition-colors"
+          className="w-9 h-9 flex items-center justify-center text-muted hover:text-fg rounded-xl hover:bg-panel-2 transition-colors"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex-1 min-w-0">
-          <h1 className="font-semibold text-gray-900 truncate">{meeting.title}</h1>
+          <h1 className="font-semibold text-fg truncate">{meeting.title}</h1>
           <div className="flex items-center gap-3 mt-0.5">
             <StatusBadge status={meeting.status} />
-            {meeting.date && (
-              <span className="text-xs text-gray-400">{formatDate(meeting.date)}</span>
-            )}
-            {meeting.duration_seconds && (
-              <span className="text-xs text-gray-400">
-                {formatDuration(meeting.duration_seconds)}
-              </span>
+            {meeting.date && <span className="text-xs text-subtle">{formatDate(meeting.date)}</span>}
+            {meeting.duration_seconds != null && (
+              <span className="text-xs text-subtle">{formatDuration(meeting.duration_seconds)}</span>
             )}
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => queryClient.invalidateQueries({ queryKey: ["meeting", id] })}
-            className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100"
+            className="p-2 text-muted hover:text-fg rounded-xl hover:bg-panel-2 transition-colors"
             title="Refresh"
           >
             <RefreshCw className="w-4 h-4" />
           </button>
           <button
             onClick={handleDelete}
-            className="p-2 text-gray-400 hover:text-red-500 rounded-lg hover:bg-red-50"
+            className="p-2 text-muted hover:text-red-500 rounded-xl hover:bg-red-500/10 transition-colors"
             title="Delete meeting"
           >
             <Trash2 className="w-4 h-4" />
@@ -204,87 +201,86 @@ export default function MeetingDetailPage() {
         </div>
       </div>
 
-      {/* Processing state */}
+      {/* Processing / failed banners */}
       {isProcessing && (
-        <div className="flex items-center gap-3 px-6 py-4 bg-blue-50 border-b border-blue-100">
-          <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
-          <p className="text-sm text-blue-700">
-            Processing your meeting… This may take a few minutes. The page will update automatically.
+        <div className="flex items-center gap-3 px-6 py-3.5 bg-gradient-to-r from-blue-500/10 to-cyan-500/10 border-b border-line">
+          <Loader2 className="w-4 h-4 animate-spin text-accent" />
+          <p className="text-sm text-accent font-medium">
+            Processing your meeting… This may take a few minutes. The page updates automatically.
           </p>
         </div>
       )}
 
       {meeting.status === "failed" && (
-        <div className="px-6 py-4 bg-red-50 border-b border-red-100">
+        <div className="px-6 py-4 bg-red-500/10 border-b border-red-500/20">
           {isTimeoutError(meeting.error_message) ? (
-            <div className="text-sm text-red-700">
+            <div className="text-sm text-red-500">
               <p className="font-semibold">Processing timed out</p>
               <p className="mt-0.5">{meeting.error_message}</p>
-              <p className="mt-1 text-red-600/80">
-                Tip: upload a shorter recording, switch to a smaller Whisper model, or
-                disable diarization/OCR to speed processing up.
+              <p className="mt-1 opacity-80">
+                Tip: upload a shorter recording, switch to a smaller Whisper model, or disable
+                diarization/OCR to speed processing up.
               </p>
             </div>
           ) : (
-            <p className="text-sm text-red-700">
+            <p className="text-sm text-red-500">
               Processing failed: {meeting.error_message || "Unknown error"}
             </p>
           )}
         </div>
       )}
 
-      {/* Main content */}
+      {/* Main */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left: Video + Tabs */}
         <div className="flex flex-col flex-1 overflow-hidden">
-          {/* Video player */}
+          {/* Video */}
           <div className="bg-black">
             <ReactPlayer
               url={recordingUrl}
               controls
               width="100%"
-              height="280px"
+              height="300px"
               onReady={(player) => {
                 playerRef.current = player;
               }}
-              onProgress={({ playedSeconds }: { playedSeconds: number }) => setCurrentTime(playedSeconds)}
-              config={{
-                file: { attributes: { crossOrigin: "anonymous" } },
-              }}
+              onProgress={({ playedSeconds }: { playedSeconds: number }) =>
+                setCurrentTime(playedSeconds)
+              }
+              config={{ file: { attributes: { crossOrigin: "anonymous" } } }}
             />
           </div>
 
           {/* Tabs */}
-          <div className="flex border-b border-gray-200 bg-white px-4">
-            {TABS.map(({ id: tabId, label, icon: Icon }) => (
-              <button
-                key={tabId}
-                onClick={() => setActiveTab(tabId)}
-                className={`flex items-center gap-1.5 px-4 py-3 text-xs font-medium border-b-2 transition-colors ${
-                  activeTab === tabId
-                    ? "border-blue-600 text-blue-600"
-                    : "border-transparent text-gray-500 hover:text-gray-700"
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                {label}
-                {tabId === "transcript" && chatMessages.length > 0 && (
-                  <span className="ml-1 bg-purple-100 text-purple-700 text-xs px-1.5 py-0.5 rounded-full">
-                    {chatMessages.length}
-                  </span>
-                )}
-                {tabId === "decisions" && decisions.length > 0 && (
-                  <span className="ml-1 bg-blue-100 text-blue-700 text-xs px-1.5 py-0.5 rounded-full">
-                    {decisions.length}
-                  </span>
-                )}
-                {tabId === "actions" && actions.length > 0 && (
-                  <span className="ml-1 bg-orange-100 text-orange-700 text-xs px-1.5 py-0.5 rounded-full">
-                    {actions.filter((a) => a.status === "open").length}
-                  </span>
-                )}
-              </button>
-            ))}
+          <div className="flex border-b border-line bg-panel px-3 overflow-x-auto">
+            {TABS.map(({ id: tabId, label, icon: Icon }) => {
+              const count = tabCount[tabId];
+              const active = activeTab === tabId;
+              return (
+                <button
+                  key={tabId}
+                  onClick={() => setActiveTab(tabId)}
+                  className={cn(
+                    "flex items-center gap-1.5 px-4 py-3 text-xs font-medium border-b-2 transition-colors whitespace-nowrap",
+                    active
+                      ? "border-accent text-accent"
+                      : "border-transparent text-muted hover:text-fg"
+                  )}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {label}
+                  {count > 0 && (
+                    <span
+                      className={cn(
+                        "ml-1 text-xs px-1.5 py-0.5 rounded-full",
+                        active ? "bg-accent/15 text-accent" : "bg-panel-2 text-subtle"
+                      )}
+                    >
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           {/* Tab content */}
@@ -301,11 +297,7 @@ export default function MeetingDetailPage() {
               <DecisionList decisions={decisions} onSeek={handleSeek} />
             )}
             {activeTab === "actions" && (
-              <ActionItemList
-                items={actions}
-                onSeek={handleSeek}
-                onUpdate={handleActionUpdate}
-              />
+              <ActionItemList items={actions} onSeek={handleSeek} onUpdate={handleActionUpdate} />
             )}
             {activeTab === "summary" && <MeetingSummary meeting={meeting} />}
             {activeTab === "frames" && (

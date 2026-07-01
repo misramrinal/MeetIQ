@@ -8,22 +8,22 @@ const STATUS_CONFIG: Record<
 > = {
   pending: {
     label: "Pending",
-    className: "bg-yellow-50 text-yellow-700 border border-yellow-200",
+    className: "bg-amber-500/10 text-amber-500 ring-1 ring-amber-500/20",
     icon: Clock,
   },
   processing: {
     label: "Processing",
-    className: "bg-blue-50 text-blue-700 border border-blue-200",
+    className: "bg-blue-500/10 text-blue-400 ring-1 ring-blue-500/20",
     icon: Loader2,
   },
   done: {
     label: "Done",
-    className: "bg-green-50 text-green-700 border border-green-200",
+    className: "bg-emerald-500/10 text-emerald-500 ring-1 ring-emerald-500/20",
     icon: CheckCircle2,
   },
   failed: {
     label: "Failed",
-    className: "bg-red-50 text-red-700 border border-red-200",
+    className: "bg-red-500/10 text-red-500 ring-1 ring-red-500/20",
     icon: XCircle,
   },
 };
@@ -37,16 +37,8 @@ export default function StatusBadge({ status, className }: StatusBadgeProps) {
   const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.pending;
   const Icon = config.icon;
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium",
-        config.className,
-        className
-      )}
-    >
-      <Icon
-        className={cn("w-3 h-3", status === "processing" && "animate-spin")}
-      />
+    <span className={cn("badge", config.className, className)}>
+      <Icon className={cn("w-3 h-3", status === "processing" && "animate-spin")} />
       {config.label}
     </span>
   );

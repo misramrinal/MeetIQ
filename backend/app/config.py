@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # ── Application ──────────────────────────────────────────────────────
     app_env: str = "development"
-    app_name: str = "MeetMind"
+    app_name: str = "MeetIQ"
     api_version: str = "v1"
     allowed_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:8000"
 

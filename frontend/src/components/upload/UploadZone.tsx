@@ -9,7 +9,6 @@ import { useRouter } from "next/navigation";
 
 const ACCEPTED = ".mp4,.mov,.webm,.mkv,.avi,.mp3,.wav,.m4a,.ogg,.flac";
 const ACCEPTED_CHAT = ".json,.txt,.log,.csv";
-// Must match the backend MAX_UPLOAD_MB setting (.env / config.py).
 const MAX_MB = 2048;
 const MAX_LABEL = MAX_MB >= 1024 ? `${(MAX_MB / 1024).toFixed(0)} GB` : `${MAX_MB} MB`;
 
@@ -27,9 +26,7 @@ export default function UploadZone() {
   const handleFile = (f: File) => {
     if (f.size > MAX_MB * 1024 * 1024) {
       const sizeLabel = (f.size / 1024 / 1024 / 1024).toFixed(2);
-      toast.error(
-        `File too large (${sizeLabel} GB). Maximum upload size is ${MAX_LABEL}.`
-      );
+      toast.error(`File too large (${sizeLabel} GB). Maximum upload size is ${MAX_LABEL}.`);
       return;
     }
     setFile(f);
@@ -80,9 +77,9 @@ export default function UploadZone() {
 
   return (
     <div className="max-w-xl mx-auto space-y-5">
-      {/* Title input */}
+      {/* Title */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1.5">
+        <label className="block text-sm font-medium text-fg mb-1.5">
           Meeting Title <span className="text-red-500">*</span>
         </label>
         <input
@@ -97,17 +94,20 @@ export default function UploadZone() {
 
       {/* Drop zone */}
       <div
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
         onClick={() => !uploading && inputRef.current?.click()}
         className={cn(
-          "border-2 border-dashed rounded-xl p-10 text-center transition-all duration-200 cursor-pointer",
+          "border-2 border-dashed rounded-2xl p-10 text-center transition-all duration-200 cursor-pointer",
           dragging
-            ? "border-blue-500 bg-blue-50"
+            ? "border-accent bg-accent/5 scale-[1.01]"
             : file
-            ? "border-green-400 bg-green-50"
-            : "border-gray-300 hover:border-blue-400 hover:bg-gray-50"
+            ? "border-emerald-500/50 bg-emerald-500/5"
+            : "border-line hover:border-accent/60 hover:bg-panel-2"
         )}
       >
         <input
@@ -121,20 +121,21 @@ export default function UploadZone() {
         {file ? (
           <div className="flex flex-col items-center gap-2">
             {isVideo ? (
-              <FileVideo className="w-10 h-10 text-green-500" />
+              <FileVideo className="w-10 h-10 text-emerald-400" />
             ) : isAudio ? (
-              <FileAudio className="w-10 h-10 text-green-500" />
+              <FileAudio className="w-10 h-10 text-emerald-400" />
             ) : (
-              <CheckCircle2 className="w-10 h-10 text-green-500" />
+              <CheckCircle2 className="w-10 h-10 text-emerald-400" />
             )}
-            <p className="font-medium text-gray-800 text-sm">{file.name}</p>
-            <p className="text-xs text-gray-500">
-              {(file.size / 1024 / 1024).toFixed(1)} MB
-            </p>
+            <p className="font-medium text-fg text-sm">{file.name}</p>
+            <p className="text-xs text-muted">{(file.size / 1024 / 1024).toFixed(1)} MB</p>
             {!uploading && (
               <button
-                onClick={(e) => { e.stopPropagation(); setFile(null); }}
-                className="flex items-center gap-1 text-xs text-red-500 hover:text-red-700 mt-1"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFile(null);
+                }}
+                className="flex items-center gap-1 text-xs text-red-500 hover:text-red-400 mt-1"
               >
                 <X className="w-3 h-3" /> Remove
               </button>
@@ -142,14 +143,12 @@ export default function UploadZone() {
           </div>
         ) : (
           <div className="flex flex-col items-center gap-3">
-            <div className="w-12 h-12 bg-blue-50 rounded-full flex items-center justify-center">
-              <Upload className="w-6 h-6 text-blue-500" />
+            <div className="w-14 h-14 bg-gradient-to-br from-blue-500/15 to-cyan-500/15 ring-1 ring-blue-500/20 rounded-2xl flex items-center justify-center">
+              <Upload className="w-6 h-6 text-blue-400" />
             </div>
             <div>
-              <p className="font-medium text-gray-700 text-sm">
-                Drop your meeting recording here
-              </p>
-              <p className="text-xs text-gray-400 mt-1">
+              <p className="font-semibold text-fg text-sm">Drop your meeting recording here</p>
+              <p className="text-xs text-subtle mt-1">
                 or click to browse — MP4, MOV, MP3, WAV and more (max {MAX_LABEL})
               </p>
             </div>
@@ -159,16 +158,16 @@ export default function UploadZone() {
 
       {/* Chat log (optional) */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1.5">
-          Chat Log <span className="text-gray-400 font-normal">(optional)</span>
+        <label className="block text-sm font-medium text-fg mb-1.5">
+          Chat Log <span className="text-subtle font-normal">(optional)</span>
         </label>
         <div
           onClick={() => !uploading && chatInputRef.current?.click()}
           className={cn(
-            "border border-dashed rounded-lg p-4 flex items-center gap-3 cursor-pointer transition-colors",
+            "border border-dashed rounded-xl p-4 flex items-center gap-3 cursor-pointer transition-colors",
             chatFile
-              ? "border-green-400 bg-green-50"
-              : "border-gray-200 hover:border-blue-300 hover:bg-gray-50"
+              ? "border-emerald-500/50 bg-emerald-500/5"
+              : "border-line hover:border-accent/50 hover:bg-panel-2"
           )}
         >
           <input
@@ -178,18 +177,23 @@ export default function UploadZone() {
             className="hidden"
             onChange={(e) => setChatFile(e.target.files?.[0] ?? null)}
           />
-          <MessageSquare className={cn("w-5 h-5 flex-shrink-0", chatFile ? "text-green-500" : "text-gray-400")} />
+          <MessageSquare
+            className={cn("w-5 h-5 flex-shrink-0", chatFile ? "text-emerald-400" : "text-subtle")}
+          />
           <div className="flex-1 min-w-0">
             {chatFile ? (
-              <p className="text-sm text-gray-800 truncate">{chatFile.name}</p>
+              <p className="text-sm text-fg truncate">{chatFile.name}</p>
             ) : (
-              <p className="text-sm text-gray-500">Attach Slack JSON, Zoom, or plain text chat log</p>
+              <p className="text-sm text-muted">Attach Slack JSON, Zoom, or plain text chat log</p>
             )}
           </div>
           {chatFile && !uploading && (
             <button
-              onClick={(e) => { e.stopPropagation(); setChatFile(null); }}
-              className="text-red-400 hover:text-red-600 flex-shrink-0"
+              onClick={(e) => {
+                e.stopPropagation();
+                setChatFile(null);
+              }}
+              className="text-red-500 hover:text-red-400 flex-shrink-0"
             >
               <X className="w-4 h-4" />
             </button>
@@ -197,27 +201,26 @@ export default function UploadZone() {
         </div>
       </div>
 
-      {/* Progress bar */}
+      {/* Progress */}
       {uploading && (
         <div className="space-y-1.5">
-          <div className="flex justify-between text-xs text-gray-500">
+          <div className="flex justify-between text-xs text-muted">
             <span>{progress < 100 ? "Uploading…" : "Processing started…"}</span>
             <span>{progress}%</span>
           </div>
-          <div className="w-full bg-gray-200 rounded-full h-2">
+          <div className="w-full bg-panel-2 rounded-full h-2 overflow-hidden">
             <div
-              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+              className="bg-gradient-to-r from-blue-600 to-cyan-500 h-2 rounded-full transition-all duration-300"
               style={{ width: `${progress}%` }}
             />
           </div>
         </div>
       )}
 
-      {/* Submit */}
       <button
         onClick={handleSubmit}
         disabled={!file || !title.trim() || uploading}
-        className="btn-primary w-full flex items-center justify-center gap-2"
+        className="btn-primary w-full"
       >
         <Upload className="w-4 h-4" />
         {uploading ? "Uploading…" : "Upload and Process"}
